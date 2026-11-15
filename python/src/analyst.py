@@ -160,6 +160,9 @@ def validate_trade_decision(
     if session is not None and not session.market_open:
         return _reject(session.reason, session.reason)
 
+    if session is not None and session.session_name in {"DAILY_ROLLOVER", "FRIDAY_LATE_GUARD"}:
+        return _reject(session.reason, session.reason)
+
     if decision.order_intent == "NONE":
         return decision, False, "Analyst recommended waiting (NONE).", 0, []
 
@@ -259,10 +262,15 @@ def validate_trade_decision(
         is_blackout=is_blackout,
         min_rr_ratio=min_rr_ratio,
     )
-    if c_score < min_confluence_score:
+    required_score = (
+        max(3, min_confluence_score - 1)
+        if (not require_killzone and not eff_session.in_killzone)
+        else min_confluence_score
+    )
+    if c_score < required_score:
         return _reject(
-            f"Confluence {c_score}/5 < {min_confluence_score}/5",
-            f"Rejected setup: Confluence {c_score}/5 below required {min_confluence_score}/5.",
+            f"Confluence {c_score}/5 < {required_score}/5",
+            f"Rejected setup: Confluence {c_score}/5 below required {required_score}/5.",
             score=c_score,
             cnotes=c_notes,
         )

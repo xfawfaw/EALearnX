@@ -165,24 +165,40 @@ class TelegramController:
             lines.append(f"Sources: {', '.join(report.grounded_sources[:3])}")
         return "\n".join(lines)
 
+    def _build_menu_keyboard(self) -> InlineKeyboardMarkup:
+        kz_label = "Hours: KillZone Only" if self.settings.require_killzone else "Hours: Flexible (24/5)"
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("ON (Auto)", callback_data="menu:mode:auto"),
+                InlineKeyboardButton("ON (Confirm)", callback_data="menu:mode:confirm"),
+                InlineKeyboardButton("STOP (Pause)", callback_data="menu:mode:pause"),
+            ],
+            [
+                InlineKeyboardButton(kz_label, callback_data="menu:toggle_kz"),
+                InlineKeyboardButton("Analyze Now", callback_data="menu:analyze"),
+            ],
+            [
+                InlineKeyboardButton("Status", callback_data="menu:status"),
+                InlineKeyboardButton("SMC", callback_data="menu:smc"),
+                InlineKeyboardButton("Stats", callback_data="menu:stats"),
+            ],
+            [
+                InlineKeyboardButton("Move BE Now", callback_data="menu:be"),
+                InlineKeyboardButton("Close All", callback_data="menu:close_all"),
+            ],
+        ])
+
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_authorized(update):
             await self._reject_unauthorized(update)
             return
         msg = (
-            "EA-LearningX Remote Controller (Exness XAUUSD)\n\n"
-            "/status - Account, session, positions, BE & pending orders\n"
-            "/smc - Instant deterministic SMC levels & session status (0 tokens)\n"
-            "/analyze - Run Gemini 4 Hydrogen macro/news/SMC analysis now\n"
-            "/stats - Journal signal & trade win-rate statistics\n"
-            "/mode auto|confirm|pause - Set execution mode\n"
-            "/session on|off - Toggle London/NY Kill-Zone requirement\n"
-            "/be - Move profitable positions to Break-Even now\n"
-            "/cancel_pending - Cancel all pending Limit orders\n"
-            "/close_all - Close all open EA positions (with confirmation)"
+            "EA-LearningX Remote Controller (Exness XAUUSD)\n"
+            f"Mode: {self.runtime.mode.upper()} | Hours: {'KillZone Only' if self.settings.require_killzone else 'Flexible (24/5)'}\n\n"
+            "Tap a button below anytime to turn trading ON/STOP or check status:"
         )
         assert update.message is not None
-        await update.message.reply_text(msg)
+        await update.message.reply_text(msg, reply_markup=self._build_menu_keyboard())
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_authorized(update):
@@ -298,9 +314,13 @@ class TelegramController:
 
     async def _execute_analysis_cycle(self, context: ContextTypes.DEFAULT_TYPE, manual: bool) -> None:
         session = evaluate_session()
-        if (not manual) and self.settings.require_killzone and (not session.in_killzone or not session.market_open):
-            logger.debug("Skipping scheduled analysis outside killzone: %s", session.session_name)
-            return
+        if not manual:
+            if not session.market_open or session.session_name in {"DAILY_ROLLOVER", "FRIDAY_LATE_GUARD"}:
+                logger.debug("Skipping scheduled analysis during market/rollover guard: %s", session.session_name)
+                return
+            if self.settings.require_killzone and not session.in_killzone:
+                logger.debug("Skipping scheduled analysis outside killzone: %s", session.session_name)
+                return
 
         market = self.bridge.read_market_context()
         ea_state = self.bridge.read_ea_state()
@@ -336,7 +356,7 @@ class TelegramController:
                 await self._broadcast(context, self._format_report(report, header))
             return
 
-        if sig.order_intent != "NONE" and report.confluence_score >= self.settings.min_confluence_score:
+        if sig.order_intent != "NONE" and report.validation_note.startswith("Validated setup"):
             self.bridge.write_signal(sig.model_copy(update={"trade_allowed": False}))
             self.runtime.pending_signals[sig.signal_id] = sig.model_copy(update={"trade_allowed": True})
             keyboard = InlineKeyboardMarkup([
@@ -382,6 +402,57 @@ class TelegramController:
         if data == "cancel_close_all":
             await query.edit_message_text("CLOSE_ALL cancelled.")
             return
+
+        if data.startswith("menu:"):
+            action = data.split(":", 1)[1]
+            if action.startswith("mode:"):
+                new_mode: ExecutionMode = action.split(":", 1)[1]  # type: ignore[assignment]
+                self.runtime.mode = new_mode
+                self.bridge.send_command("PAUSE" if new_mode == "pause" else "RESUME")
+                await query.edit_message_text(
+                    f"EA-LearningX Mode: {new_mode.upper()} | Hours: {'KillZone Only' if self.settings.require_killzone else 'Flexible (24/5)'}",
+                    reply_markup=self._build_menu_keyboard(),
+                )
+                return
+            if action == "toggle_kz":
+                self.settings.require_killzone = not self.settings.require_killzone
+                await query.edit_message_text(
+                    f"EA-LearningX Mode: {self.runtime.mode.upper()} | Hours: {'KillZone Only' if self.settings.require_killzone else 'Flexible (24/5)'}",
+                    reply_markup=self._build_menu_keyboard(),
+                )
+                return
+            if action == "status":
+                await query.message.reply_text(self._format_status(self.bridge.read_ea_state()))
+                return
+            if action == "smc":
+                sess = evaluate_session()
+                mkt = self.bridge.read_market_context()
+                if mkt is None or not mkt.h1_bars:
+                    await query.message.reply_text(f"Session: {sess.session_name}\nNo MT5 bars exported yet.")
+                else:
+                    await query.message.reply_text(f"Session: {sess.session_name}\n\n{format_smc_summary(build_smc_snapshot(mkt))}")
+                return
+            if action == "stats":
+                st = self.journal.get_stats()
+                await query.message.reply_text(
+                    f"Stats: {st.wins}W/{st.losses}L ({st.win_rate_pct:.1f}%) | Closed PnL: ${st.net_realized_pnl:+.2f} | Analyses: {st.total_analyses}"
+                )
+                return
+            if action == "analyze":
+                await query.message.reply_text("Running Gemini 4 Hydrogen + SMC analysis...")
+                await self._execute_analysis_cycle(context, manual=True)
+                return
+            if action == "be":
+                cmd = self.bridge.send_command("MOVE_BE_NOW")
+                await query.message.reply_text(f"Sent MOVE_BE_NOW (id={cmd.command_id}).")
+                return
+            if action == "close_all":
+                kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("Confirm CLOSE ALL", callback_data="confirm_close_all"),
+                    InlineKeyboardButton("Cancel", callback_data="cancel_close_all"),
+                ]])
+                await query.message.reply_text("Close all open EA-LearningX positions now?", reply_markup=kb)
+                return
 
         if data.startswith("approve:"):
             sig_id = data.split(":", 1)[1]
@@ -471,7 +542,7 @@ class TelegramController:
             raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured in .env")
 
         app = Application.builder().token(self.settings.telegram_bot_token).build()
-        app.add_handler(CommandHandler(["start", "help"], self.cmd_start))
+        app.add_handler(CommandHandler(["start", "help", "menu"], self.cmd_start))
         app.add_handler(CommandHandler("status", self.cmd_status))
         app.add_handler(CommandHandler("smc", self.cmd_smc))
         app.add_handler(CommandHandler("stats", self.cmd_stats))

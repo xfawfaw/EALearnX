@@ -200,15 +200,31 @@ def test_validate_blocks_hmr_killzone_counter_h4_and_duplicate() -> None:
     assert ok_hmr is False
     assert dec_hmr.order_intent == "NONE"
 
-    # Outside kill zone
+    # Outside kill zone: blocked when require_killzone=True, allowed when flexible (require_killzone=False)
     off_sess = SessionStatus(
-        session_name="ASIAN_SESSION", in_killzone=False, market_open=True, reason="Asian chop"
+        session_name="ASIAN_SESSION", in_killzone=False, market_open=True, reason="Asian session"
     )
     dec_kz, ok_kz, _, _, _ = validate_trade_decision(
         base, market, state, 0.70, False, None, session=off_sess, smc=smc, require_killzone=True
     )
     assert ok_kz is False
     assert dec_kz.order_intent == "NONE"
+
+    dec_flex, ok_flex, _, score_flex, _ = validate_trade_decision(
+        base, market, state, 0.70, False, None, session=off_sess, smc=smc, require_killzone=False
+    )
+    assert ok_flex is True
+    assert score_flex == 4
+
+    # Rollover is always blocked even in flexible mode
+    roll_sess = SessionStatus(
+        session_name="DAILY_ROLLOVER", in_killzone=False, market_open=True, reason="Rollover"
+    )
+    dec_roll, ok_roll, _, _, _ = validate_trade_decision(
+        base, market, state, 0.70, False, None, session=roll_sess, smc=smc, require_killzone=False
+    )
+    assert ok_roll is False
+    assert dec_roll.order_intent == "NONE"
 
     # Counter-H4 trend (SELL when H4 is BULLISH)
     sell_dec = base.model_copy(
