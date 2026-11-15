@@ -1,0 +1,87 @@
+"""Configuration management for EA-LearningX."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Annotated, Literal
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def default_mt5_common_dir() -> Path:
+    """Resolve the default MT5 Common\\Files\\EA-LearningX path on Windows."""
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / "MetaQuotes" / "Terminal" / "Common" / "Files" / "EA-LearningX"
+    return Path.home() / "AppData" / "Roaming" / "MetaQuotes" / "Terminal" / "Common" / "Files" / "EA-LearningX"
+
+
+class Settings(BaseSettings):
+    """Application settings loaded from .env and environment variables."""
+
+    model_config = SettingsConfigDict(
+        env_file=str(PROJECT_ROOT / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Gemini AI
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-4-hydrogen"
+    gemini_use_search_grounding: bool = True
+
+    # Telegram Bot
+    telegram_bot_token: str = ""
+    telegram_allowed_user_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)
+
+    # MT5 Bridge
+    mt5_common_files_dir: Path | None = None
+
+    # Execution & Risk Controls
+    default_execution_mode: Literal["auto", "confirm", "pause"] = "confirm"
+    analysis_interval_minutes: int = Field(default=30, ge=5, le=240)
+    signal_ttl_minutes: int = Field(default=45, ge=5, le=480)
+    min_confidence: float = Field(default=0.70, ge=0.0, le=1.0)
+    min_rr_ratio: float = Field(default=1.8, ge=1.0, le=10.0)
+    min_confluence_score: int = Field(default=4, ge=1, le=5)
+    require_killzone: bool = True
+    allow_counter_h4: bool = False
+
+    # Exness HMR Guard
+    hmr_pre_news_minutes: int = Field(default=15, ge=0, le=120)
+    hmr_post_news_minutes: int = Field(default=10, ge=0, le=120)
+
+    # Journal DB
+    journal_db_path: Path = Field(default=PROJECT_ROOT / "data" / "journal.db")
+
+    # Optional external API
+    finnhub_api_key: str = ""
+
+    @field_validator("telegram_allowed_user_ids", mode="before")
+    @classmethod
+    def _parse_allowed_ids(cls, value: object) -> list[int]:
+        if value is None or value == "":
+            return []
+        if isinstance(value, int):
+            return [value]
+        if isinstance(value, list):
+            return [int(v) for v in value]
+        if isinstance(value, str):
+            return [int(part.strip()) for part in value.split(",") if part.strip()]
+        raise ValueError("Invalid TELEGRAM_ALLOWED_USER_IDS format")
+
+    @field_validator("mt5_common_files_dir", mode="before")
+    @classmethod
+    def _parse_bridge_dir(cls, value: object) -> Path | None:
+        if value is None or str(value).strip() == "":
+            return None
+        return Path(str(value).strip())
+
+    @property
+    def bridge_dir(self) -> Path:
+        """Return the resolved MT5 Common Files bridge directory."""
+        return self.mt5_common_files_dir or default_mt5_common_dir()
