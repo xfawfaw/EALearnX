@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest, NetworkError, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -75,15 +77,31 @@ class TelegramController:
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
     ) -> None:
+        chunks = [text[i : i + 4000] for i in range(0, len(text), 4000)] or [""]
         for chat_id in self.settings.telegram_allowed_user_ids:
-            try:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=text,
-                    reply_markup=reply_markup,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed sending Telegram message to %s: %s", chat_id, exc)
+            for idx, chunk in enumerate(chunks):
+                markup = reply_markup if idx == len(chunks) - 1 else None
+                for attempt in range(2):
+                    try:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=chunk,
+                            reply_markup=markup,
+                        )
+                        break
+                    except (TimedOut, NetworkError) as exc:
+                        if attempt == 0:
+                            logger.warning(
+                                "Transient Telegram send error to %s (retrying): %s",
+                                chat_id,
+                                exc,
+                            )
+                            await asyncio.sleep(1.5)
+                            continue
+                        logger.warning("Failed sending Telegram message to %s: %s", chat_id, exc)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Failed sending Telegram message to %s: %s", chat_id, exc)
+                        break
 
     def _format_status(self, state: EaState | None) -> str:
         session = evaluate_session()
@@ -165,13 +183,20 @@ class TelegramController:
             lines.append(f"Sources: {', '.join(report.grounded_sources[:3])}")
         return "\n".join(lines)
 
+    def _format_menu_text(self) -> str:
+        hours = "KillZone Only" if self.settings.require_killzone else "Flexible (24/5)"
+        return f"EA-LearningX Mode: {self.runtime.mode.upper()} | Hours: {hours}"
+
     def _build_menu_keyboard(self) -> InlineKeyboardMarkup:
+        def _mode_label(mode_val: ExecutionMode, label: str) -> str:
+            return f"[ACTIVE] {label}" if self.runtime.mode == mode_val else label
+
         kz_label = "Hours: KillZone Only" if self.settings.require_killzone else "Hours: Flexible (24/5)"
         return InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("ON (Auto)", callback_data="menu:mode:auto"),
-                InlineKeyboardButton("ON (Confirm)", callback_data="menu:mode:confirm"),
-                InlineKeyboardButton("STOP (Pause)", callback_data="menu:mode:pause"),
+                InlineKeyboardButton(_mode_label("auto", "ON (Auto)"), callback_data="menu:mode:auto"),
+                InlineKeyboardButton(_mode_label("confirm", "ON (Confirm)"), callback_data="menu:mode:confirm"),
+                InlineKeyboardButton(_mode_label("pause", "STOP (Pause)"), callback_data="menu:mode:pause"),
             ],
             [
                 InlineKeyboardButton(kz_label, callback_data="menu:toggle_kz"),
@@ -188,13 +213,27 @@ class TelegramController:
             ],
         ])
 
+    async def _edit_menu_safely(self, query: CallbackQuery, unchanged_notice: str) -> None:
+        """Edit the inline control panel, ignoring no-op edits with clear user feedback."""
+        try:
+            await query.edit_message_text(
+                self._format_menu_text(),
+                reply_markup=self._build_menu_keyboard(),
+            )
+        except BadRequest as exc:
+            if "message is not modified" in str(exc).lower():
+                if query.message is not None:
+                    await query.message.reply_text(unchanged_notice)
+                return
+            raise
+
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_authorized(update):
             await self._reject_unauthorized(update)
             return
         msg = (
             "EA-LearningX Remote Controller (Exness XAUUSD)\n"
-            f"Mode: {self.runtime.mode.upper()} | Hours: {'KillZone Only' if self.settings.require_killzone else 'Flexible (24/5)'}\n\n"
+            f"{self._format_menu_text()}\n\n"
             "Tap a button below anytime to turn trading ON/STOP or check status:"
         )
         assert update.message is not None
@@ -375,6 +414,13 @@ class TelegramController:
             if manual:
                 await self._broadcast(context, self._format_report(report, "[CONFIRM MODE - NO TRADE]"))
 
+    async def _run_manual_analysis(self, context: ContextTypes.DEFAULT_TYPE) -> None:
+        try:
+            await self._execute_analysis_cycle(context, manual=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Manual analysis failed: %s", exc)
+            await self._broadcast(context, f"Analysis failed: {exc}")
+
     async def cmd_analyze(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_authorized(update):
             await self._reject_unauthorized(update)
@@ -383,7 +429,7 @@ class TelegramController:
         await update.message.reply_text(
             "Running Gemini 4 Hydrogen macro, news, sentiment & deterministic SMC analysis..."
         )
-        await self._execute_analysis_cycle(context, manual=True)
+        await self._run_manual_analysis(context)
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_authorized(update):
@@ -392,8 +438,34 @@ class TelegramController:
 
         query = update.callback_query
         assert query is not None
-        await query.answer()
         data = query.data or ""
+
+        if data.startswith("menu:mode:"):
+            new_mode: ExecutionMode = data.split(":", 2)[2]  # type: ignore[assignment]
+            already_selected = self.runtime.mode == new_mode
+            self.runtime.mode = new_mode
+            ea_cmd = "PAUSE" if new_mode == "pause" else "RESUME"
+            self.bridge.send_command(ea_cmd)
+            toast = (
+                f"Already in {new_mode.upper()} mode ({ea_cmd} sent)"
+                if already_selected
+                else f"Mode updated to {new_mode.upper()}"
+            )
+            await query.answer(toast)
+            await self._edit_menu_safely(
+                query,
+                unchanged_notice=f"Mode is already {new_mode.upper()} ({ea_cmd} sent to MT5).",
+            )
+            return
+
+        if data == "menu:toggle_kz":
+            self.settings.require_killzone = not self.settings.require_killzone
+            hours = "KillZone Only" if self.settings.require_killzone else "Flexible (24/5)"
+            await query.answer(f"Hours: {hours}")
+            await self._edit_menu_safely(query, unchanged_notice=f"Hours: {hours}")
+            return
+
+        await query.answer()
 
         if data == "confirm_close_all":
             cmd = self.bridge.send_command("CLOSE_ALL")
@@ -405,22 +477,6 @@ class TelegramController:
 
         if data.startswith("menu:"):
             action = data.split(":", 1)[1]
-            if action.startswith("mode:"):
-                new_mode: ExecutionMode = action.split(":", 1)[1]  # type: ignore[assignment]
-                self.runtime.mode = new_mode
-                self.bridge.send_command("PAUSE" if new_mode == "pause" else "RESUME")
-                await query.edit_message_text(
-                    f"EA-LearningX Mode: {new_mode.upper()} | Hours: {'KillZone Only' if self.settings.require_killzone else 'Flexible (24/5)'}",
-                    reply_markup=self._build_menu_keyboard(),
-                )
-                return
-            if action == "toggle_kz":
-                self.settings.require_killzone = not self.settings.require_killzone
-                await query.edit_message_text(
-                    f"EA-LearningX Mode: {self.runtime.mode.upper()} | Hours: {'KillZone Only' if self.settings.require_killzone else 'Flexible (24/5)'}",
-                    reply_markup=self._build_menu_keyboard(),
-                )
-                return
             if action == "status":
                 await query.message.reply_text(self._format_status(self.bridge.read_ea_state()))
                 return
@@ -440,7 +496,7 @@ class TelegramController:
                 return
             if action == "analyze":
                 await query.message.reply_text("Running Gemini 4 Hydrogen + SMC analysis...")
-                await self._execute_analysis_cycle(context, manual=True)
+                await self._run_manual_analysis(context)
                 return
             if action == "be":
                 cmd = self.bridge.send_command("MOVE_BE_NOW")
@@ -536,12 +592,24 @@ class TelegramController:
         self.runtime.known_be_tickets = be_set
         self.runtime.known_pending_tickets = set(ord_map.keys())
 
+    async def _error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        logger.error("Unhandled Telegram update error (update=%s): %s", update, context.error, exc_info=context.error)
+
     def build_application(self) -> Application:
         """Create and wire the python-telegram-bot Application."""
         if not self.settings.telegram_bot_token:
             raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured in .env")
 
-        app = Application.builder().token(self.settings.telegram_bot_token).build()
+        app = (
+            Application.builder()
+            .token(self.settings.telegram_bot_token)
+            .connect_timeout(20.0)
+            .read_timeout(30.0)
+            .write_timeout(30.0)
+            .pool_timeout(15.0)
+            .build()
+        )
+        app.add_error_handler(self._error_handler)
         app.add_handler(CommandHandler(["start", "help", "menu"], self.cmd_start))
         app.add_handler(CommandHandler("status", self.cmd_status))
         app.add_handler(CommandHandler("smc", self.cmd_smc))
