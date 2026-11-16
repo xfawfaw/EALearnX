@@ -423,6 +423,12 @@ void SetHeldPosition(const ulong ticket, const bool hold)
      }
   }
 
+bool IsPendingOrderType(const ENUM_ORDER_TYPE t)
+  {
+   return (t == ORDER_TYPE_BUY_LIMIT || t == ORDER_TYPE_SELL_LIMIT ||
+           t == ORDER_TYPE_BUY_STOP  || t == ORDER_TYPE_SELL_STOP);
+  }
+
 void CountSarOrders(int &sar_open, int &sar_pending, int &held_open)
   {
    sar_open    = 0;
@@ -441,7 +447,7 @@ void CountSarOrders(int &sar_open, int &sar_pending, int &held_open)
 
    for(int i = OrdersTotal() - 1; i >= 0; i--)
      {
-      if(g_ord.SelectByIndex(i) && g_ord.Symbol() == _Symbol && g_ord.Magic() == InpMagicNumber)
+      if(g_ord.SelectByIndex(i) && g_ord.Symbol() == _Symbol && g_ord.Magic() == InpMagicNumber && IsPendingOrderType(g_ord.OrderType()))
          sar_pending++;
      }
   }
@@ -945,14 +951,16 @@ double GetSmartSarDistanceUSD()
 //+------------------------------------------------------------------+
 bool GetInitialSarDirection(ENUM_ORDER_TYPE &out_type)
   {
+   double atr_val = InpMinAtrM1_USD;
    double atr_buf[];
    if(g_atr_m1_handle != INVALID_HANDLE && CopyBuffer(g_atr_m1_handle, 0, 1, 1, atr_buf) > 0)
      {
-      if(atr_buf[0] < InpMinAtrM1_USD)
+      atr_val = atr_buf[0];
+      if(atr_val < InpMinAtrM1_USD)
          return false;
      }
 
-   double adx_val = 25.0, pdi_val = 0.0, mdi_val = 0.0;
+   double pdi_val = 0.0, mdi_val = 0.0;
    if(InpMinAdxM1 > 0.0 && g_adx_m1_handle != INVALID_HANDLE)
      {
       double adx_buf[], pdi_buf[], mdi_buf[];
@@ -960,27 +968,31 @@ bool GetInitialSarDirection(ENUM_ORDER_TYPE &out_type)
          CopyBuffer(g_adx_m1_handle, 1, 0, 1, pdi_buf) <= 0 ||
          CopyBuffer(g_adx_m1_handle, 2, 0, 1, mdi_buf) <= 0)
          return false;
-      adx_val = adx_buf[0];
       pdi_val = pdi_buf[0];
       mdi_val = mdi_buf[0];
-      if(adx_val < InpMinAdxM1)
+      // Require ADX trend strength >= 20.0 (avoid dead flat sideways chop)
+      if(adx_buf[0] < MathMin(InpMinAdxM1, 20.0))
          return false;
      }
 
-   double ema_fast[], ema_slow[], ema_mid[];
-   if(g_ema_fast_handle != INVALID_HANDLE && g_ema_slow_handle != INVALID_HANDLE && g_ema_mid_handle != INVALID_HANDLE)
+   double ema_fast[], ema_slow[];
+   if(g_ema_fast_handle != INVALID_HANDLE && g_ema_slow_handle != INVALID_HANDLE)
      {
       if(CopyBuffer(g_ema_fast_handle, 0, 0, 1, ema_fast) > 0 &&
-         CopyBuffer(g_ema_slow_handle, 0, 0, 1, ema_slow) > 0 &&
-         CopyBuffer(g_ema_mid_handle, 0, 0, 1, ema_mid) > 0)
+         CopyBuffer(g_ema_slow_handle, 0, 0, 1, ema_slow) > 0)
         {
          double c0 = iClose(_Symbol, PERIOD_M1, 0);
-         if(ema_fast[0] > ema_slow[0] && ema_slow[0] > ema_mid[0] && c0 > ema_fast[0] && (InpMinAdxM1 <= 0.0 || pdi_val > mdi_val))
+         double o0 = iOpen(_Symbol, PERIOD_M1, 0);
+         double max_stretch = MathMax(atr_val * 2.2, 2.50);
+
+         if(ema_fast[0] > ema_slow[0] && c0 > o0 && c0 > ema_fast[0] &&
+            (c0 - ema_slow[0]) <= max_stretch && (InpMinAdxM1 <= 0.0 || pdi_val > mdi_val))
            {
             out_type = ORDER_TYPE_BUY;
             return true;
            }
-         if(ema_fast[0] < ema_slow[0] && ema_slow[0] < ema_mid[0] && c0 < ema_fast[0] && (InpMinAdxM1 <= 0.0 || mdi_val > pdi_val))
+         if(ema_fast[0] < ema_slow[0] && c0 < o0 && c0 < ema_fast[0] &&
+            (ema_slow[0] - c0) <= max_stretch && (InpMinAdxM1 <= 0.0 || mdi_val > pdi_val))
            {
             out_type = ORDER_TYPE_SELL;
             return true;
@@ -999,6 +1011,8 @@ void DeleteStrayPendingExcept(const ulong keep_ticket)
    for(int i = OrdersTotal() - 1; i >= 0; i--)
      {
       if(!g_ord.SelectByIndex(i) || g_ord.Symbol() != _Symbol || g_ord.Magic() != InpMagicNumber)
+         continue;
+      if(!IsPendingOrderType(g_ord.OrderType()))
          continue;
       if(g_ord.Ticket() != keep_ticket)
          g_trade.OrderDelete(g_ord.Ticket());
