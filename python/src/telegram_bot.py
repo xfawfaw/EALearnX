@@ -86,7 +86,7 @@ class TelegramController:
         for chat_id in self.settings.telegram_allowed_user_ids:
             for idx, chunk in enumerate(chunks):
                 markup = reply_markup if idx == len(chunks) - 1 else None
-                for attempt in range(2):
+                for attempt in range(3):
                     try:
                         await context.bot.send_message(
                             chat_id=chat_id,
@@ -96,13 +96,14 @@ class TelegramController:
                         )
                         break
                     except (TimedOut, NetworkError) as exc:
-                        if attempt == 0:
+                        if attempt < 2:
                             logger.warning(
-                                "Transient Telegram send error to %s (retrying): %s",
+                                "Transient Telegram send error to %s (retry %d): %s",
                                 chat_id,
+                                attempt + 1,
                                 exc,
                             )
-                            await asyncio.sleep(1.5)
+                            await asyncio.sleep(1.5 * (attempt + 1))
                             continue
                         logger.warning("Failed sending Telegram message to %s: %s", chat_id, exc)
                     except Exception as exc:  # noqa: BLE001
@@ -120,7 +121,7 @@ class TelegramController:
         safe_caption = caption[:1020]
         sent_any = False
         for chat_id in self.settings.telegram_allowed_user_ids:
-            for attempt in range(2):
+            for attempt in range(3):
                 try:
                     await context.bot.send_photo(
                         chat_id=chat_id,
@@ -132,15 +133,27 @@ class TelegramController:
                     sent_any = True
                     break
                 except (TimedOut, NetworkError) as exc:
-                    if attempt == 0:
-                        logger.warning("Transient Telegram photo send error to %s (retrying): %s", chat_id, exc)
-                        await asyncio.sleep(1.5)
+                    if attempt < 2:
+                        logger.warning(
+                            "Transient Telegram photo send error to %s (retry %d): %s",
+                            chat_id,
+                            attempt + 1,
+                            exc,
+                        )
+                        await asyncio.sleep(1.5 * (attempt + 1))
                         continue
                     logger.warning("Failed sending Telegram photo to %s: %s", chat_id, exc)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Failed sending Telegram photo to %s: %s", chat_id, exc)
                     break
         return sent_any
+
+    async def _safe_answer(self, query: CallbackQuery, text: str | None = None) -> None:
+        """Answer a Telegram callback query without letting transient timeouts abort the action."""
+        try:
+            await query.answer(text)
+        except (TimedOut, NetworkError, BadRequest) as exc:
+            logger.warning("Callback answer skipped (%s): %s", query.data, exc)
 
     @staticmethod
     def _meter_bar(ratio: float, width: int = 8) -> str:
@@ -714,7 +727,7 @@ class TelegramController:
                 if already_selected
                 else f"Mode updated to {new_mode.upper()}"
             )
-            await query.answer(toast)
+            await self._safe_answer(query, toast)
             await self._edit_menu_safely(
                 query,
                 unchanged_notice=f"✅ Mode is already <b>{new_mode.upper()}</b> (<code>{ea_cmd}</code> sent to MT5).",
@@ -724,11 +737,11 @@ class TelegramController:
         if data == "menu:toggle_kz":
             self.settings.require_killzone = not self.settings.require_killzone
             hours = "KillZone Only" if self.settings.require_killzone else "Flexible (24/5)"
-            await query.answer(f"Hours: {hours}")
+            await self._safe_answer(query, f"Hours: {hours}")
             await self._edit_menu_safely(query, unchanged_notice=f"🕒 Hours: <b>{hours}</b>")
             return
 
-        await query.answer()
+        await self._safe_answer(query)
 
         if data == "confirm_close_all":
             cmd = self.bridge.send_command("CLOSE_ALL")
@@ -796,15 +809,20 @@ class TelegramController:
                 )
                 return
             if action == "analyze":
-                progress_msg = await query.message.reply_text(
-                    "⏳ <i>Analyzing XAUUSD (Gemini 4 Hydrogen + SMC)...</i>",
-                    parse_mode=ParseMode.HTML,
-                )
-                await self._run_manual_analysis(context)
+                progress_msg = None
                 try:
-                    await progress_msg.delete()
-                except Exception:  # noqa: BLE001
-                    pass
+                    progress_msg = await query.message.reply_text(
+                        "⏳ <i>Analyzing XAUUSD (Gemini 4 Hydrogen + SMC)...</i>",
+                        parse_mode=ParseMode.HTML,
+                    )
+                except (TimedOut, NetworkError) as exc:
+                    logger.warning("Progress message timed out; continuing analysis: %s", exc)
+                await self._run_manual_analysis(context)
+                if progress_msg is not None:
+                    try:
+                        await progress_msg.delete()
+                    except Exception:  # noqa: BLE001
+                        pass
                 return
             if action == "be":
                 cmd = self.bridge.send_command("MOVE_BE_NOW")

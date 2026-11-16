@@ -194,3 +194,34 @@ def test_menu_brief_callback_sends_full_expandable_html_report(tmp_path: Path) -
     assert "Macro:" in sent_html
     assert "News Sentiment:" in sent_html
 
+
+def test_analyze_button_continues_even_when_callback_answer_times_out(tmp_path: Path) -> None:
+    ctrl = _make_controller(tmp_path, default_mode="auto")
+    market, report = _sample_market_and_report()
+    ctrl.analyst.analyze = AsyncMock(return_value=report)
+    ctrl.bridge.write_market_context = MagicMock()
+    ctrl.bridge.read_market_context = MagicMock(return_value=market)
+    ctrl.bridge.read_ea_state = MagicMock(return_value=None)
+
+    progress_msg = SimpleNamespace(delete=AsyncMock())
+    reply_text = AsyncMock(return_value=progress_msg)
+    query = SimpleNamespace(
+        data="menu:analyze",
+        answer=AsyncMock(side_effect=TimedOut("Timed out")),
+        edit_message_text=AsyncMock(),
+        message=SimpleNamespace(reply_text=reply_text),
+    )
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=5462088246),
+        callback_query=query,
+        message=None,
+    )
+    send_photo_mock = AsyncMock()
+    context = SimpleNamespace(bot=SimpleNamespace(send_photo=send_photo_mock, send_message=AsyncMock()))
+
+    asyncio.run(ctrl.handle_callback(update, context))  # type: ignore[arg-type]
+
+    ctrl.analyst.analyze.assert_awaited_once()
+    send_photo_mock.assert_awaited_once()
+
+
