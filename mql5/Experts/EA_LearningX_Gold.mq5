@@ -167,11 +167,15 @@ double CalculateLotSize(const double entry_price, const double sl_price, const E
    lots = NormalizeDouble(lots, 2);
 
    // Verify free margin (leave 15% buffer for Exness HMR dynamic leverage)
+   // Note: OrderCalcMargin requires ORDER_TYPE_BUY / ORDER_TYPE_SELL (not pending types).
+   ENUM_ORDER_TYPE margin_type = (order_type == ORDER_TYPE_SELL || order_type == ORDER_TYPE_SELL_LIMIT || order_type == ORDER_TYPE_SELL_STOP)
+                                 ? ORDER_TYPE_SELL
+                                 : ORDER_TYPE_BUY;
    double free_margin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    double req_margin  = 0.0;
    while(lots >= min_lot)
      {
-      if(OrderCalcMargin(order_type, _Symbol, lots, entry_price, req_margin))
+      if(OrderCalcMargin(margin_type, _Symbol, lots, entry_price, req_margin))
         {
          if(req_margin <= free_margin * 0.85)
             return lots;
@@ -562,7 +566,7 @@ void ProcessAiSignal()
          return;
         }
 
-      datetime exp_time = (expires_at > now_utc) ? (datetime)expires_at : 0;
+      datetime exp_time = (expires_at > now_utc) ? (datetime)(TimeCurrent() + MathMax(60L, expires_at - now_utc)) : 0;
       ENUM_ORDER_TYPE_TIME exp_type = (exp_time > 0) ? ORDER_TIME_SPECIFIED : ORDER_TIME_GTC;
 
       bool ok = is_buy_limit
