@@ -32,7 +32,10 @@ class Settings(BaseSettings):
     # Gemini AI
     gemini_api_key: str = ""
     gemini_model: str = "gemini-4-hydrogen"
-    gemini_use_search_grounding: bool = True
+    gemini_fallback_models: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+    )
+    gemini_use_search_grounding: bool = False
 
     # Telegram Bot
     telegram_bot_token: str = ""
@@ -73,6 +76,17 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [int(part.strip()) for part in value.split(",") if part.strip()]
         raise ValueError("Invalid TELEGRAM_ALLOWED_USER_IDS format")
+
+    @field_validator("gemini_fallback_models", mode="before")
+    @classmethod
+    def _parse_fallback_models(cls, value: object) -> list[str]:
+        if value is None or value == "":
+            return ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+        if isinstance(value, list):
+            return [str(v).strip() for v in value if str(v).strip()]
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        raise ValueError("Invalid GEMINI_FALLBACK_MODELS format")
 
     @field_validator("mt5_common_files_dir", mode="before")
     @classmethod

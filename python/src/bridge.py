@@ -45,14 +45,19 @@ class Mt5Bridge:
     def _read_json(self, path: Path) -> dict | None:
         if not path.exists():
             return None
-        try:
-            raw = path.read_text(encoding="utf-8-sig").strip()
-            if not raw:
-                return None
-            return json.loads(raw)
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("Failed reading %s: %s", path.name, exc)
-            return None
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                raw = path.read_text(encoding="utf-8-sig").strip()
+                if not raw:
+                    return None
+                return json.loads(raw)
+            except (PermissionError, OSError, json.JSONDecodeError) as exc:
+                last_exc = exc
+                if attempt < 2:
+                    time.sleep(0.05)
+        logger.warning("Failed reading %s: %s", path.name, last_exc)
+        return None
 
     def read_ea_state(self) -> EaState | None:
         """Read the latest EA state snapshot."""

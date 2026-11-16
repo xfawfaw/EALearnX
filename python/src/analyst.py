@@ -65,15 +65,15 @@ def _score_confluence(
     else:
         notes.append(f"[0] Off-Session: {session.session_name}")
 
-    # 2. HTF Structure Alignment (H4 + H1)
+    # 2. HTF / Tactical Structure Alignment (H4 + H1, or M15 inside H4 range)
     if smc is not None:
         expected = "BULLISH" if want_buy else "BEARISH"
         if smc.htf_aligned_bias == expected:
             score += 1
             notes.append(f"[+1] HTF Aligned: H4={smc.h4.trend}, H1={smc.h1.trend}")
-        elif smc.h4.trend == "RANGING" and smc.h1.trend == expected:
+        elif smc.h4.trend == "RANGING" and (smc.h1.trend == expected or smc.m15.trend == expected):
             score += 1
-            notes.append(f"[+1] H1 Aligned in H4 Range: H1={smc.h1.trend}")
+            notes.append(f"[+1] Tactical Aligned in H4 Range: H1={smc.h1.trend}, M15={smc.m15.trend}")
         else:
             notes.append(f"[0] HTF Misaligned: H4={smc.h4.trend}, H1={smc.h1.trend}")
     else:
@@ -81,7 +81,7 @@ def _score_confluence(
 
     # 3. Macro & News Sentiment Alignment
     sent = decision.news_sentiment_score
-    if (want_buy and sent >= 0.15) or (not want_buy and sent <= -0.15):
+    if (want_buy and sent >= 0.10) or (not want_buy and sent <= -0.10):
         score += 1
         notes.append(f"[+1] Sentiment Aligned ({sent:+.2f})")
     else:
@@ -301,14 +301,56 @@ class GoldAnalyst:
             else None
         )
 
+    def _candidate_models(self) -> list[str]:
+        models: list[str] = []
+        for m in [self.settings.gemini_model, *self.settings.gemini_fallback_models]:
+            cleaned = m.strip()
+            if cleaned and cleaned not in models:
+                models.append(cleaned)
+        return models
+
+    def _generate_with_fallback(
+        self,
+        contents: str,
+        config: types.GenerateContentConfig | None = None,
+    ) -> object:
+        """Call primary Gemini model and automatically cascade on 429/404 errors."""
+        assert self._client is not None
+        last_exc: Exception | None = None
+        for idx, model_name in enumerate(self._candidate_models()):
+            try:
+                resp = self._client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config,
+                )
+                if idx > 0:
+                    logger.info("Used fallback Gemini model: %s", model_name)
+                return resp
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                msg = str(exc)
+                if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "404" in msg or "NOT_FOUND" in msg:
+                    logger.warning("Model %s unavailable (%s); trying next fallback.", model_name, msg.splitlines()[0][:120])
+                    continue
+                raise
+        assert last_exc is not None
+        raise last_exc
+
     def _run_macro_grounding_sync(
         self,
         now_utc: datetime,
         calendar_text: str,
         headlines_text: str,
     ) -> tuple[str, list[str]]:
-        """Stage 1: Gather real-time macro/news/sentiment synthesis with Google Search."""
+        """Stage 1: Gather real-time macro/news/sentiment synthesis with optional Search."""
         assert self._client is not None
+        sources: list[str] = []
+        if not self.settings.gemini_use_search_grounding:
+            # Save API quota by passing local feeds directly into Stage 2 in a single LLM call.
+            brief = f"RSS Headlines:\n{headlines_text}"
+            return brief, [h for h in ["ForexFactory", "YahooFinance", "InvestingRSS"] if headlines_text != "No RSS headlines fetched."]
+
         prompt = (
             f"Current UTC time: {now_utc.strftime('%Y-%m-%d %H:%M UTC')}\n"
             "You are a senior institutional XAUUSD (Gold) macroeconomist and news sentiment analyst.\n"
@@ -322,36 +364,30 @@ class GoldAnalyst:
             "and Event Risk for Gold right now."
         )
 
-        sources: list[str] = []
-        if self.settings.gemini_use_search_grounding:
+        try:
+            resp = self._generate_with_fallback(
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                ),
+            )
+            text = (getattr(resp, "text", None) or "").strip()
             try:
-                resp = self._client.models.generate_content(
-                    model=self.settings.gemini_model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        tools=[types.Tool(google_search=types.GoogleSearch())],
-                    ),
-                )
-                text = (resp.text or "").strip()
-                try:
-                    cands = resp.candidates or []
-                    if cands and cands[0].grounding_metadata:
-                        chunks = cands[0].grounding_metadata.grounding_chunks or []
-                        for ch in chunks[:5]:
-                            if ch.web and ch.web.title:
-                                sources.append(ch.web.title)
-                except Exception:  # noqa: BLE001
-                    pass
-                if text:
-                    return text, sources
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Google Search grounding fallback to local feeds: %s", exc)
+                cands = getattr(resp, "candidates", None) or []
+                if cands and cands[0].grounding_metadata:
+                    chunks = cands[0].grounding_metadata.grounding_chunks or []
+                    for ch in chunks[:5]:
+                        if ch.web and ch.web.title:
+                            sources.append(ch.web.title)
+            except Exception:  # noqa: BLE001
+                pass
+            if text:
+                return text, sources
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Google Search grounding fallback to local feeds: %s", exc)
 
-        resp = self._client.models.generate_content(
-            model=self.settings.gemini_model,
-            contents=prompt,
-        )
-        return (resp.text or "No macro summary available.").strip(), sources
+        resp = self._generate_with_fallback(contents=prompt)
+        return ((getattr(resp, "text", None) or "No macro summary available.").strip()), sources
 
     def _run_structured_decision_sync(
         self,
@@ -445,17 +481,17 @@ class GoldAnalyst:
             f"{rule_5.replace('5.', '6.')}"
         )
 
-        resp = self._client.models.generate_content(
-            model=self.settings.gemini_model,
+        resp = self._generate_with_fallback(
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=AiTradeDecision,
             ),
         )
-        if resp.parsed is not None and isinstance(resp.parsed, AiTradeDecision):
-            return resp.parsed
-        return AiTradeDecision.model_validate_json(resp.text or "{}")
+        parsed = getattr(resp, "parsed", None)
+        if parsed is not None and isinstance(parsed, AiTradeDecision):
+            return parsed
+        return AiTradeDecision.model_validate_json(getattr(resp, "text", None) or "{}")
 
     async def analyze(
         self,

@@ -274,3 +274,30 @@ def test_settings_parses_allowed_user_ids_from_dotenv(tmp_path: Path) -> None:
     env_multi = tmp_path / ".env.multi"
     env_multi.write_text("TELEGRAM_ALLOWED_USER_IDS=111111, 222222\n", encoding="utf-8")
     assert Settings(_env_file=str(env_multi)).telegram_allowed_user_ids == [111111, 222222]
+
+
+def test_analyst_falls_back_to_next_model_on_429() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from python.src.analyst import GoldAnalyst
+    from python.src.data_feeds import MarketDataFeeds
+
+    settings = Settings(
+        gemini_api_key="dummy-key",
+        gemini_model="gemini-4-hydrogen",
+        gemini_fallback_models=["gemini-3.8-flash", "gemini-2.5-flash"],
+    )
+    analyst = GoldAnalyst(settings=settings, feeds=MarketDataFeeds())
+
+    calls: list[str] = []
+
+    def fake_generate(model: str, contents: str, config=None):  # noqa: ANN001, ANN202
+        calls.append(model)
+        if model == "gemini-4-hydrogen":
+            raise RuntimeError("429 RESOURCE_EXHAUSTED quota exceeded")
+        return SimpleNamespace(text="OK")
+
+    analyst._client = SimpleNamespace(models=SimpleNamespace(generate_content=MagicMock(side_effect=fake_generate)))  # type: ignore[assignment]
+    resp = analyst._generate_with_fallback("hello")
+    assert getattr(resp, "text") == "OK"
+    assert calls == ["gemini-4-hydrogen", "gemini-3.8-flash"]

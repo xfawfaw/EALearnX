@@ -41,6 +41,8 @@ class BotRuntimeState:
     known_be_tickets: set[int] = field(default_factory=set)
     known_pending_tickets: set[int] = field(default_factory=set)
     state_initialized: bool = False
+    trade_alerts_enabled: bool = True
+    quota_alert_sent: bool = False
     last_report: AnalysisReport | None = None
 
 
@@ -365,6 +367,7 @@ class TelegramController:
             return f"✅ {label}" if self.runtime.mode == mode_val else label
 
         kz_label = "🎯 KillZone Only" if self.settings.require_killzone else "🌐 24/5 Flexible"
+        alerts_label = "🔔 Alerts: ON" if self.runtime.trade_alerts_enabled else "🔕 Alerts: OFF"
         return InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(_mode_label("auto", "Auto"), callback_data="menu:mode:auto"),
@@ -382,6 +385,7 @@ class TelegramController:
             ],
             [
                 InlineKeyboardButton("🛡 Move BE", callback_data="menu:be"),
+                InlineKeyboardButton(alerts_label, callback_data="menu:toggle_alerts"),
                 InlineKeyboardButton("🚨 Close All", callback_data="menu:close_all"),
             ],
         ])
@@ -646,10 +650,18 @@ class TelegramController:
                 ea_state=ea_state,
                 publish_allowed=is_auto,
             )
+            self.runtime.quota_alert_sent = False
         except Exception as exc:  # noqa: BLE001
             logger.exception("Analysis failed")
             if manual:
-                await self._broadcast(context, f"⚠️ <b>Analysis failed:</b> <code>{html.escape(str(exc))}</code>")
+                await self._broadcast(context, f"⚠️ <b>Analysis failed:</b> <code>{html.escape(str(exc)[:220])}</code>")
+            elif not self.runtime.quota_alert_sent:
+                self.runtime.quota_alert_sent = True
+                await self._broadcast(
+                    context,
+                    f"⚠️ <b>Scheduled AI Analysis Paused/Error:</b> <code>{html.escape(str(exc)[:220])}</code>\n"
+                    "<i>Note: M1 Trailing SAR inside MT5 EA keeps running independently.</i>",
+                )
             return
 
         self.runtime.last_report = report
@@ -739,6 +751,13 @@ class TelegramController:
             hours = "KillZone Only" if self.settings.require_killzone else "Flexible (24/5)"
             await self._safe_answer(query, f"Hours: {hours}")
             await self._edit_menu_safely(query, unchanged_notice=f"🕒 Hours: <b>{hours}</b>")
+            return
+
+        if data == "menu:toggle_alerts":
+            self.runtime.trade_alerts_enabled = not self.runtime.trade_alerts_enabled
+            state_lbl = "ON" if self.runtime.trade_alerts_enabled else "OFF"
+            await self._safe_answer(query, f"Trade alerts: {state_lbl}")
+            await self._edit_menu_safely(query, unchanged_notice=f"🔔 Trade alerts: <b>{state_lbl}</b>")
             return
 
         await self._safe_answer(query)
@@ -904,16 +923,17 @@ class TelegramController:
 
         for ticket in sorted(set(pos_map.keys()) - self.runtime.known_position_tickets):
             p = pos_map[ticket]
-            p_icon = "🟢" if p.type == "BUY" else "🔴"
-            await self._broadcast(
-                context,
-                f"{p_icon} <b>MT5 OPENED</b>  <code>#{p.ticket} {p.type} {p.volume:.2f} {html.escape(state.symbol)}</code>\n"
-                f"🎯 Entry <code>{p.open_price:.2f}</code> · 🛑 SL <code>{p.sl:.2f}</code> · 🏆 TP <code>{p.tp:.2f}</code>",
-                reply_markup=self._status_keyboard(),
-            )
+            if self.runtime.trade_alerts_enabled:
+                p_icon = "🟢" if p.type == "BUY" else "🔴"
+                await self._broadcast(
+                    context,
+                    f"{p_icon} <b>MT5 OPENED</b>  <code>#{p.ticket} {p.type} {p.volume:.2f} {html.escape(state.symbol)}</code>\n"
+                    f"🎯 Entry <code>{p.open_price:.2f}</code> · 🛑 SL <code>{p.sl:.2f}</code> · 🏆 TP <code>{p.tp:.2f}</code>",
+                    reply_markup=self._status_keyboard(),
+                )
 
         for ticket in sorted(be_set - self.runtime.known_be_tickets):
-            if ticket in pos_map:
+            if ticket in pos_map and self.runtime.trade_alerts_enabled:
                 p = pos_map[ticket]
                 await self._broadcast(
                     context,
@@ -923,21 +943,24 @@ class TelegramController:
 
         for ticket in sorted(self.runtime.known_position_tickets - set(pos_map.keys())):
             self.journal.mark_position_closed(ticket)
-            pnl_icon = "🟢" if state.daily_pnl_usd >= 0 else "🔴"
-            await self._broadcast(
-                context,
-                f"🏁 <b>MT5 CLOSED</b>  <code>#{ticket}</code>\n"
-                f"💰 Equity <code>${state.equity:,.2f}</code> · {pnl_icon} Daily PnL <code>${state.daily_pnl_usd:+.2f}</code>",
-                reply_markup=self._stats_keyboard(),
-            )
+            if self.runtime.trade_alerts_enabled:
+                pnl_icon = "🟢" if state.daily_pnl_usd >= 0 else "🔴"
+                await self._broadcast(
+                    context,
+                    f"🏁 <b>MT5 CLOSED</b>  <code>#{ticket}</code>\n"
+                    f"💰 Equity <code>${state.equity:,.2f}</code> · {pnl_icon} Daily PnL <code>${state.daily_pnl_usd:+.2f}</code>",
+                    reply_markup=self._stats_keyboard(),
+                )
 
+        # Pending stops ratchet rapidly in M1 SAR mode; keep chat clean unless pending limit placed.
         for ticket in sorted(set(ord_map.keys()) - self.runtime.known_pending_tickets):
             o = ord_map[ticket]
-            await self._broadcast(
-                context,
-                f"⏳ <b>MT5 PENDING PLACED</b>  <code>#{o.ticket} {html.escape(o.type)} {o.volume:.2f}</code>\n"
-                f"🎯 @ <code>{o.price:.2f}</code> · 🛑 SL <code>{o.sl:.2f}</code> · 🏆 TP <code>{o.tp:.2f}</code>",
-            )
+            if self.runtime.trade_alerts_enabled and "LIMIT" in o.type.upper():
+                await self._broadcast(
+                    context,
+                    f"⏳ <b>MT5 PENDING PLACED</b>  <code>#{o.ticket} {html.escape(o.type)} {o.volume:.2f}</code>\n"
+                    f"🎯 @ <code>{o.price:.2f}</code> · 🛑 SL <code>{o.sl:.2f}</code> · 🏆 TP <code>{o.tp:.2f}</code>",
+                )
 
         self.runtime.known_position_tickets = set(pos_map.keys())
         self.runtime.known_be_tickets = be_set
