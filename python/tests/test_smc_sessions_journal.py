@@ -158,3 +158,9 @@ def test_journal_records_signals_and_trade_lifecycle(tmp_path: Path) -> None:
     assert stats.wins == 1
     assert stats.win_rate_pct == 100.0
     assert stats.net_realized_pnl == 42.50
+
+    learning_txt = journal.format_learning_context()
+    assert "1W/0L (100.0%)" in learning_txt
+    assert "BUY: 1/1 wins" in learning_txt
+    assert "#9001 BUY" in learning_txt
+    assert "BUY_LIMIT (BULLISH)" in learning_txt

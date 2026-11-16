@@ -43,10 +43,10 @@ class Settings(BaseSettings):
 
     # Execution & Risk Controls
     default_execution_mode: Literal["auto", "confirm", "pause"] = "confirm"
-    analysis_interval_minutes: int = Field(default=30, ge=5, le=240)
+    analysis_interval_minutes: int = Field(default=15, ge=5, le=240)
     signal_ttl_minutes: int = Field(default=45, ge=5, le=480)
     min_confidence: float = Field(default=0.70, ge=0.0, le=1.0)
-    min_rr_ratio: float = Field(default=1.8, ge=1.0, le=10.0)
+    min_rr_ratio: float = Field(default=1.6, ge=1.0, le=10.0)
     min_confluence_score: int = Field(default=4, ge=1, le=5)
     require_killzone: bool = False
     allow_counter_h4: bool = False

@@ -20,7 +20,7 @@ input string InpBridgeFolder        = "EA-LearningX";// Subfolder inside Common\
 input int    InpTimerSeconds        = 2;             // Bridge poll & state sync interval (sec)
 
 input group "=== Risk & Exness Safety ==="
-input double InpRiskPercent         = 1.0;           // Risk per trade (% of equity)
+input double InpRiskPercent         = 0.5;           // Risk per trade (% of equity)
 input double InpMaxLotSize          = 0.50;          // Hard max lot cap
 input double InpMaxSpreadUSD        = 0.60;          // Max allowed spread in USD (e.g. 0.60 = 60 cents)
 input double InpMaxDailyLossPct     = 3.0;           // Daily max loss halt (% of day start equity)
@@ -30,10 +30,10 @@ input bool   InpCloseOnOppositeBias = false;         // Close open trade if AI r
 
 input group "=== Break-Even & Trailing (USD) ==="
 input bool   InpUseAutoBE           = true;          // Enable automatic Break-Even
-input double InpBE_TriggerR         = 1.0;           // Move to BE when profit >= N * initial SL risk
+input double InpBE_TriggerR         = 0.7;           // Move to BE when profit >= N * initial SL risk
 input double InpBE_BufferUSD        = 0.25;          // Lock-in profit buffer at BE (USD)
 input bool   InpUseTrailing         = true;          // Trail SL after BE is active
-input double InpTrailingDistUSD     = 5.00;          // Trailing distance behind price (USD)
+input double InpTrailingDistUSD     = 4.00;          // Trailing distance behind price (USD)
 input double InpTrailingStepUSD     = 1.00;          // Min step before modifying SL (USD)
 
 input group "=== Fallback SL/TP (if AI omits) ==="

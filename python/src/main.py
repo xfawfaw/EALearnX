@@ -58,16 +58,17 @@ def main() -> None:
     logger.info("MT5 Common Files bridge directory: %s", settings.bridge_dir)
     logger.info("Journal DB: %s", settings.journal_db_path)
     logger.info(
-        "Model: %s | Mode: %s | KillZone=%s | MinConfluence=%d/5 | MinRR=1:%.1f",
+        "Model: %s | Mode: %s | Interval=%dm | KillZone=%s | MinConfluence=%d/5 | MinRR=1:%.1f",
         settings.gemini_model,
         settings.default_execution_mode,
+        settings.analysis_interval_minutes,
         settings.require_killzone,
         settings.min_confluence_score,
         settings.min_rr_ratio,
     )
 
     feeds = MarketDataFeeds(finnhub_api_key=settings.finnhub_api_key)
-    analyst = GoldAnalyst(settings=settings, feeds=feeds)
+    analyst = GoldAnalyst(settings=settings, feeds=feeds, journal=journal)
     controller = TelegramController(
         settings=settings,
         bridge=bridge,

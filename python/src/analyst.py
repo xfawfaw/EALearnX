@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from google import genai
 from google.genai import types
 
+from typing import TYPE_CHECKING
+
 from .config import Settings
 from .data_feeds import MarketDataFeeds, compute_hmr_blackout, format_upcoming_calendar
 from .schemas import (
@@ -25,6 +27,9 @@ from .schemas import (
 )
 from .sessions import evaluate_session
 from .smc import build_smc_snapshot, format_smc_summary
+
+if TYPE_CHECKING:
+    from .journal import TradeJournal
 
 logger = logging.getLogger(__name__)
 
@@ -279,11 +284,17 @@ def validate_trade_decision(
 
 
 class GoldAnalyst:
-    """Runs Gemini 4 Hydrogen macro/news/sentiment + deterministic SMC & session confluence."""
+    """Runs Gemini 4 Hydrogen macro/news/sentiment + deterministic SMC, session & self-learning."""
 
-    def __init__(self, settings: Settings, feeds: MarketDataFeeds) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        feeds: MarketDataFeeds,
+        journal: TradeJournal | None = None,
+    ) -> None:
         self.settings = settings
         self.feeds = feeds
+        self.journal = journal
         self._client = (
             genai.Client(api_key=settings.gemini_api_key)
             if settings.gemini_api_key
@@ -353,6 +364,7 @@ class GoldAnalyst:
         session: SessionStatus,
         is_blackout: bool,
         blackout_title: str | None,
+        learning_context: str = "No closed trades recorded yet.",
     ) -> AiTradeDecision:
         """Stage 2: Produce strict Pydantic JSON trade decision anchored to deterministic SMC."""
         assert self._client is not None
@@ -422,12 +434,15 @@ class GoldAnalyst:
             f"{market_block}\n\n"
             "=== CURRENT ACCOUNT & POSITIONS ===\n"
             f"{state_block}\n\n"
-            "HIGH-WIN-RATE RULES:\n"
-            "1. Only take A+ setups where HTF SMC trend (or H1 inside H4 range) and Liquidity/OB/FVG align without major macro opposition.\n"
-            "2. For BUY_LIMIT / SELL_LIMIT, snap entry/SL/TP to the Anchored OB/FVG levels above whenever valid.\n"
+            "=== EA-LEARNINGX SELF-LEARNING MEMORY (FROM JOURNAL.DB) ===\n"
+            f"{learning_context}\n\n"
+            "HYBRID INTRADAY + SCALPING RULES:\n"
+            "1. Use H4/H1 SMC for main direction or range boundaries, and use M15 swings, OBs, FVGs, and liquidity sweeps for tactical entries.\n"
+            "2. For BUY_LIMIT / SELL_LIMIT, snap entry/SL/TP to the nearest unmitigated M15 or H1 OB/FVG; use MARKET_BUY/SELL when price has just swept liquidity and confirmed M15 CHoCH/BOS.\n"
             "3. Never trade against H4 trend unless structure has a confirmed CHoCH + strong macro catalyst.\n"
             f"4. Minimum Reward-to-Risk is 1:{self.settings.min_rr_ratio:.1f}, and SL distance must be 0.5x-3.5x H1 ATR(14).\n"
-            f"{rule_5}"
+            "5. Self-Learning Adaptation: review the Journal memory above — avoid repeating directions/sessions/patterns that just lost, and demand cleaner confirmation if recent win rate drops below 50%.\n"
+            f"{rule_5.replace('5.', '6.')}"
         )
 
         resp = self._client.models.generate_content(
@@ -474,6 +489,12 @@ class GoldAnalyst:
             else "No RSS headlines fetched."
         )
 
+        learning_context = (
+            self.journal.format_learning_context()
+            if self.journal is not None
+            else "No closed trades recorded yet."
+        )
+
         macro_brief, sources = await asyncio.to_thread(
             self._run_macro_grounding_sync, now_utc, calendar_text, headlines_text
         )
@@ -488,6 +509,7 @@ class GoldAnalyst:
             session,
             is_blackout,
             blackout_title,
+            learning_context,
         )
 
         validated_decision, trade_valid, validation_note, c_score, c_notes = validate_trade_decision(

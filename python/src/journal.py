@@ -183,3 +183,70 @@ class TradeJournal:
             win_rate_pct=round(win_rate, 1),
             net_realized_pnl=round(float(net_pnl), 2),
         )
+
+    def format_learning_context(self, limit_trades: int = 8, limit_signals: int = 5) -> str:
+        """Build a compact self-learning feedback block from past closed trades and setups."""
+        stats = self.get_stats()
+        with self._connect() as conn:
+            side_rows = conn.execute(
+                """
+                SELECT side,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN last_profit > 0 THEN 1 ELSE 0 END) AS wins,
+                       COALESCE(SUM(last_profit), 0.0) AS pnl
+                FROM trades
+                WHERE status = 'CLOSED'
+                GROUP BY side
+                """
+            ).fetchall()
+            recent_trades = conn.execute(
+                """
+                SELECT ticket, side, volume, open_price, last_profit, be_applied
+                FROM trades
+                WHERE status = 'CLOSED'
+                ORDER BY COALESCE(closed_at, opened_at) DESC
+                LIMIT ?
+                """,
+                (limit_trades,),
+            ).fetchall()
+            recent_signals = conn.execute(
+                """
+                SELECT bias, order_intent, confluence_score, session_name, validation_note
+                FROM signals
+                WHERE order_intent != 'NONE'
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit_signals,),
+            ).fetchall()
+
+        if stats.trades_closed == 0 and not recent_signals:
+            return "No closed trades or actionable history recorded yet (fresh journal baseline)."
+
+        lines = [
+            (
+                f"Overall Closed Performance: {stats.wins}W/{stats.losses}L "
+                f"({stats.win_rate_pct:.1f}%), BE triggered={stats.be_triggered_count}, "
+                f"Net PnL=${stats.net_realized_pnl:+.2f}"
+            )
+        ]
+        if side_rows:
+            side_parts = [
+                f"{side}: {wins}/{total} wins (${pnl:+.2f})"
+                for side, total, wins, pnl in side_rows
+            ]
+            lines.append("By Side: " + " | ".join(side_parts))
+        if recent_trades:
+            lines.append("Recent Closed Trades (newest->oldest):")
+            for ticket, side, vol, op, pnl, be in recent_trades:
+                outcome = "WIN" if pnl > 0 else "LOSS"
+                lines.append(
+                    f"  - #{ticket} {side} {vol:.2f}@{op:.2f} -> {outcome} (${pnl:+.2f}, BE={'yes' if be else 'no'})"
+                )
+        if recent_signals:
+            lines.append("Recent Actionable Setups (newest->oldest):")
+            for bias, intent, score, sess, note in recent_signals:
+                lines.append(
+                    f"  - {intent} ({bias}) in {sess} | Score={score}/5 | {note}"
+                )
+        return "\n".join(lines)
