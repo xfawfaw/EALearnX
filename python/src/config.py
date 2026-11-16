@@ -9,6 +9,8 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from .schemas import StrategyMode
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -54,6 +56,17 @@ class Settings(BaseSettings):
     require_killzone: bool = False
     allow_counter_h4: bool = False
 
+    # ML & HMM / XGBoost Engine
+    default_strategy_mode: StrategyMode = "M15_PRECISION"
+    ml_models_dir: Path = Field(default=PROJECT_ROOT / "data" / "models")
+    ml_spread_cost_usd: float = Field(default=0.30, ge=0.0)
+    ml_min_profit_factor: float = Field(default=1.05, ge=1.0)
+    ml_min_oos_trades: int = Field(default=20, ge=1)
+    ml_m15_bars: int = Field(default=4000, ge=500)
+    ml_m5_bars: int = Field(default=12000, ge=1000)
+    ml_poll_interval_seconds: int = Field(default=15, ge=1, le=300)
+    ml_retrain_hour_utc: int = Field(default=22, ge=0, le=23)
+
     # Exness HMR Guard
     hmr_pre_news_minutes: int = Field(default=15, ge=0, le=120)
     hmr_post_news_minutes: int = Field(default=10, ge=0, le=120)
@@ -93,6 +106,13 @@ class Settings(BaseSettings):
     def _parse_bridge_dir(cls, value: object) -> Path | None:
         if value is None or str(value).strip() == "":
             return None
+        return Path(str(value).strip())
+
+    @field_validator("ml_models_dir", mode="before")
+    @classmethod
+    def _parse_models_dir(cls, value: object) -> Path:
+        if value is None or str(value).strip() == "":
+            return PROJECT_ROOT / "data" / "models"
         return Path(str(value).strip())
 
     @property

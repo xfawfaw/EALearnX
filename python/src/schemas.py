@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 ExecutionMode = Literal["auto", "confirm", "pause"]
 Bias = Literal["BULLISH", "BEARISH", "NEUTRAL"]
 OrderIntent = Literal["NONE", "MARKET_BUY", "MARKET_SELL", "BUY_LIMIT", "SELL_LIMIT"]
+StrategyMode = Literal["M15_PRECISION", "M5_INTRADAY"]
+RegimeLabel = Literal["TRENDING", "RANGING", "VOLATILE"]
 RemoteAction = Literal[
     "CLOSE_ALL",
     "CANCEL_PENDING",
@@ -73,15 +75,53 @@ class EaSignalPayload(BaseModel):
     signal_id: str
     generated_at_unix: int
     expires_at_unix: int
-    bias: Bias
-    order_intent: OrderIntent
-    trade_allowed: bool
+    bias: Bias = "NEUTRAL"
+    order_intent: OrderIntent = "NONE"
+    trade_allowed: bool = False
     limit_price: float = 0.0
     sl_price: float = 0.0
     tp_price: float = 0.0
     confidence: float = 0.0
     blackout_until_unix: int = 0
     reason: str = ""
+    max_hold_until_unix: int = Field(default=0, ge=0)
+    strategy_mode: str = ""
+    regime: str = ""
+
+
+class MlMetricsSummary(BaseModel):
+    """Out-of-sample metrics summary for a trained ML model bundle."""
+
+    mode: StrategyMode
+    trained_at_unix: int
+    oos_trades: int
+    oos_win_rate: float
+    oos_profit_factor: float
+    oos_net_pnl_usd: float
+    chosen_threshold: float
+    verified_for_live: bool
+    fail_reason: str = ""
+
+
+class MlPrediction(BaseModel):
+    """Per-bar ML prediction payload returned by MlPredictor."""
+
+    mode: StrategyMode
+    bar_time_unix: int
+    timeframe: str
+    regime: RegimeLabel
+    regime_probs: dict[str, float] = Field(default_factory=dict)
+    prob_long: float
+    prob_short: float
+    threshold: float
+    order_intent: OrderIntent
+    confidence: float
+    entry_price: float
+    sl_price: float
+    tp_price: float
+    max_hold_until_unix: int = Field(default=0, ge=0)
+    reason: str = ""
+    verified_for_live: bool = False
 
 
 class EaCommandPayload(BaseModel):
