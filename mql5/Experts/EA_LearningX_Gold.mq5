@@ -169,7 +169,10 @@ void CountMyOrders(int &open_pos, int &pending_ord)
 double ClampLotWithMargin(const double raw_lots, const double entry_price, const ENUM_ORDER_TYPE order_type)
   {
    double min_lot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double max_lot  = MathMin(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX), InpMaxLotSize);
+   if(min_lot <= 0.0) min_lot = 0.01;
+   double sym_max  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double max_lot  = (sym_max > 0.0) ? MathMin(sym_max, InpMaxLotSize) : InpMaxLotSize;
+   if(max_lot < min_lot) max_lot = min_lot;
    double step_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
    if(step_lot <= 0.0) step_lot = 0.01;
 
@@ -183,15 +186,30 @@ double ClampLotWithMargin(const double raw_lots, const double entry_price, const
                                  : ORDER_TYPE_BUY;
    double free_margin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    double req_margin  = 0.0;
-   while(lots >= min_lot)
+   bool   margin_ok   = false;
+   while(lots >= min_lot - 1e-9)
      {
-      if(OrderCalcMargin(margin_type, _Symbol, lots, entry_price, req_margin))
+      margin_ok = OrderCalcMargin(margin_type, _Symbol, lots, entry_price, req_margin);
+      if(!margin_ok)
         {
-         if(req_margin <= free_margin * 0.85)
-            return lots;
+         double init_margin = SymbolInfoDouble(_Symbol, SYMBOL_MARGIN_INITIAL);
+         if(init_margin > 0.0)
+           {
+            req_margin = init_margin * lots;
+            margin_ok  = true;
+           }
+         else if(lots <= min_lot + 1e-9 && free_margin > 0.0)
+           {
+            PrintFormat("[EA-LearningX] OrderCalcMargin err=%d fallback min_lot=%.2f (free=%.2f)", GetLastError(), lots, free_margin);
+            return NormalizeDouble(lots, 2);
+           }
         }
+      if(margin_ok && req_margin <= free_margin * 0.85)
+         return NormalizeDouble(lots, 2);
       lots = NormalizeDouble(lots - step_lot, 2);
      }
+   PrintFormat("[EA-LearningX] Margin clamp=0: raw=%.5f min=%.2f max=%.2f free=%.2f req=%.2f calcOk=%s err=%d",
+               raw_lots, min_lot, max_lot, free_margin, req_margin, margin_ok ? "true" : "false", GetLastError());
    return 0.0;
   }
 
@@ -205,7 +223,10 @@ double CalculateLotSize(const double entry_price, const double sl_price, const E
 
    double sl_dist = MathAbs(entry_price - sl_price);
    if(sl_dist <= _Point)
+     {
+      PrintFormat("[EA-LearningX] Lot=0: sl_dist=%.5f <= _Point (entry=%.3f sl=%.3f)", sl_dist, entry_price, sl_price);
       return 0.0;
+     }
 
    ENUM_ORDER_TYPE calc_type = (order_type == ORDER_TYPE_SELL || order_type == ORDER_TYPE_SELL_LIMIT || order_type == ORDER_TYPE_SELL_STOP)
                                ? ORDER_TYPE_SELL
@@ -223,12 +244,18 @@ double CalculateLotSize(const double entry_price, const double sl_price, const E
       if(tick_value <= 0.0)
          tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
       if(tick_size <= 0.0 || tick_value <= 0.0)
+        {
+         PrintFormat("[EA-LearningX] Lot=0: bad tick info (tick_size=%.5f tick_val=%.5f)", tick_size, tick_value);
          return 0.0;
+        }
       loss_per_lot = (sl_dist / tick_size) * tick_value;
      }
 
    if(loss_per_lot <= 0.0)
+     {
+      PrintFormat("[EA-LearningX] Lot=0: loss_per_lot=%.4f", loss_per_lot);
       return 0.0;
+     }
 
    double equity     = AccountInfoDouble(ACCOUNT_EQUITY);
    double risk_money = equity * (InpRiskPercent / 100.0);
