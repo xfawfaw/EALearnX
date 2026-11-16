@@ -27,7 +27,7 @@ input string InpBridgeFolder        = "EA-LearningX";// Subfolder inside Common\
 input int    InpTimerSeconds        = 2;             // Bridge poll & state sync interval (sec)
 
 input group "=== M1 Momentum & Tight Trailing Engine ==="
-input bool          InpUseSarEngine       = true;             // Enable fast M1 Tight Trailing Engine
+input bool          InpUseSarEngine       = false;            // Enable fast M1 Tight Trailing Engine (off in ML mode)
 input bool          InpAllowInstantFlip   = false;            // False=Trend-only (no chop whip-flips), True=SAR flip
 input ENUM_LOT_MODE InpLotMode            = LOT_DYNAMIC_RISK; // Lot Sizing Mode
 input double        InpFixedLot           = 0.05;             // Starter Fixed Lot (used when LOT_FIXED)
@@ -52,10 +52,10 @@ input int    InpMaxPendingOrders    = 2;             // Max concurrent pending o
 input bool   InpCloseOnOppositeBias = false;         // Close open trade if AI reverses strongly
 
 input group "=== Break-Even & Trailing (USD) (Legacy Mode) ==="
-input bool   InpUseAutoBE           = true;          // Enable automatic Break-Even
+input bool   InpUseAutoBE           = false;         // Enable automatic Break-Even (off for matched ML exits)
 input double InpBE_TriggerR         = 0.7;           // Move to BE when profit >= N * initial SL risk
 input double InpBE_BufferUSD        = 0.25;          // Lock-in profit buffer at BE (USD)
-input bool   InpUseTrailing         = true;          // Trail SL after BE is active
+input bool   InpUseTrailing         = false;         // Trail SL after BE is active (off for matched ML exits)
 input double InpTrailingDistUSD     = 4.00;          // Trailing distance behind price (USD)
 input double InpTrailingStepUSD     = 1.00;          // Min step before modifying SL (USD)
 
@@ -324,6 +324,18 @@ void ManageOpenPositions()
       double cur_sl = g_pos.StopLoss();
       double cur_tp = g_pos.TakeProfit();
 
+      // 0. Matched Triple-Barrier H-bar Timeout Close (respects 🔒 Keep / Hold lock)
+      long max_hold = GetMaxHoldUntil(ticket);
+      if(max_hold > 0 && !IsHeldPosition(ticket, g_pos.Comment()) && (long)TimeGMT() >= max_hold)
+        {
+         if(g_trade.PositionClose(ticket))
+           {
+            ClearMaxHoldUntil(ticket);
+            PrintFormat("[EA-LearningX] Triple-barrier timeout close #%I64u (deadline=%I64d)", ticket, max_hold);
+           }
+         continue;
+        }
+
       if(g_pos.PositionType() == POSITION_TYPE_BUY)
         {
          bool be_applied = (cur_sl >= open_p && cur_sl > 0.0);
@@ -421,6 +433,36 @@ void SetHeldPosition(const ulong ticket, const bool hold)
       GlobalVariableDel(key);
       PrintFormat("[EA-LearningX] Released position #%I64u back to SAR management.", ticket);
      }
+  }
+
+//+------------------------------------------------------------------+
+//| Triple-Barrier H-bar max hold helpers                            |
+//+------------------------------------------------------------------+
+string MaxHoldKey(const ulong ticket)
+  {
+   return "LX_MAXH_" + IntegerToString(InpMagicNumber) + "_" + IntegerToString((long)ticket);
+  }
+
+long GetMaxHoldUntil(const ulong ticket)
+  {
+   string key = MaxHoldKey(ticket);
+   if(!GlobalVariableCheck(key))
+      return 0;
+   return (long)MathRound(GlobalVariableGet(key));
+  }
+
+void SetMaxHoldUntil(const ulong ticket, const long until_unix)
+  {
+   if(ticket == 0 || until_unix <= 0)
+      return;
+   GlobalVariableSet(MaxHoldKey(ticket), (double)until_unix);
+  }
+
+void ClearMaxHoldUntil(const ulong ticket)
+  {
+   string key = MaxHoldKey(ticket);
+   if(GlobalVariableCheck(key))
+      GlobalVariableDel(key);
   }
 
 bool IsPendingOrderType(const ENUM_ORDER_TYPE t)
@@ -528,11 +570,13 @@ void ProcessAiSignal()
    string intent;
    bool trade_allowed = false;
    long expires_at = 0;
+   long max_hold_until = 0;
    double limit_price = 0.0, sl_price = 0.0, tp_price = 0.0;
 
    JsonGetString(json, "order_intent", intent, "NONE");
    JsonGetBool(json, "trade_allowed", trade_allowed, false);
    JsonGetLong(json, "expires_at_unix", expires_at, 0);
+   JsonGetLong(json, "max_hold_until_unix", max_hold_until, 0);
    JsonGetDouble(json, "limit_price", limit_price, 0.0);
    JsonGetDouble(json, "sl_price", sl_price, 0.0);
    JsonGetDouble(json, "tp_price", tp_price, 0.0);
@@ -645,7 +689,20 @@ void ProcessAiSignal()
       if(!ok)
          PrintFormat("[EA-LearningX] %s failed: %s", intent, g_trade.ResultRetcodeDescription());
       else
-         PrintFormat("[EA-LearningX] %s executed: lots=%.2f sl=%.2f tp=%.2f", intent, lots, sl_price, tp_price);
+        {
+         PrintFormat("[EA-LearningX] %s executed: lots=%.2f sl=%.2f tp=%.2f max_hold=%I64d", intent, lots, sl_price, tp_price, max_hold_until);
+         if(max_hold_until > 0)
+           {
+            for(int pi = PositionsTotal() - 1; pi >= 0; pi--)
+              {
+               if(g_pos.SelectByIndex(pi) && g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.Comment() == comment)
+                 {
+                  if(GetMaxHoldUntil(g_pos.Ticket()) == 0)
+                     SetMaxHoldUntil(g_pos.Ticket(), max_hold_until);
+                 }
+              }
+           }
+        }
      }
    else if(intent == "BUY_LIMIT" || intent == "SELL_LIMIT")
      {
