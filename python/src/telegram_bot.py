@@ -146,7 +146,7 @@ class TelegramController:
     def _meter_bar(ratio: float, width: int = 8) -> str:
         clamped = max(0.0, min(1.0, ratio))
         filled = int(round(clamped * width))
-        return ("█" * filled) + ("░" * (width - filled))
+        return ("▰" * filled) + ("▱" * (width - filled))
 
     @staticmethod
     def _bias_badge(bias: str) -> str:
@@ -214,6 +214,12 @@ class TelegramController:
             lines.append(
                 f"   ⚡ <code>#{o.ticket} {html.escape(o.type)} {o.volume:.2f} @ {o.price:.2f}</code>\n"
                 f"      SL <code>{o.sl:.2f}</code> · TP <code>{o.tp:.2f}</code>"
+            )
+        if self.runtime.last_report is not None:
+            r = self.runtime.last_report
+            lines.append(
+                f"\n🤖 <b>Last AI:</b> {self._bias_badge(r.decision.bias)} · <code>{html.escape(r.decision.order_intent)}</code> "
+                f"({r.confluence_score}/5) — <i>{html.escape(r.validation_note[:80])}</i>"
             )
         return "\n".join(lines)
 

@@ -393,9 +393,24 @@ class GoldAnalyst:
         else:
             state_block = "EA state unavailable."
 
+        if self.settings.require_killzone:
+            rule_5 = (
+                "5. KillZone filter is ON: if outside London/NY kill zone, during HMR blackout, "
+                "or if macro strongly conflicts with SMC, return order_intent='NONE'."
+            )
+        else:
+            rule_5 = (
+                "5. Flexible 24/5 mode is ON (Asian & Off-Peak hours ARE ALLOWED whenever MarketOpen=True): "
+                "do NOT return 'NONE' solely because it is Asian session or outside London/NY Kill-Zones. "
+                "When H4/H1 SMC structure + OB/FVG zone + R:R >= min_rr_ratio align without HMR blackout, "
+                "propose the setup (preferring Anchored BUY_LIMIT / SELL_LIMIT at OB/FVG when price is not at an immediate trigger). "
+                "Return 'NONE' only when MarketOpen=False, HMR blackout is active, or price action lacks a valid technical edge."
+            )
+
         prompt = (
             f"Current UTC: {now_utc.strftime('%Y-%m-%d %H:%M UTC')}\n"
             f"Session: {session.session_name} (KillZone={session.in_killzone}, MarketOpen={session.market_open}) - {session.reason}\n"
+            f"Hours Mode: {'KillZone Only' if self.settings.require_killzone else 'Flexible 24/5 (all open sessions allowed)'}\n"
             f"HMR News Blackout Active: {is_blackout} ({blackout_title or 'None'})\n\n"
             "=== STAGE 1 MACRO & NEWS SENTIMENT BRIEF ===\n"
             f"{macro_brief}\n\n"
@@ -408,11 +423,11 @@ class GoldAnalyst:
             "=== CURRENT ACCOUNT & POSITIONS ===\n"
             f"{state_block}\n\n"
             "HIGH-WIN-RATE RULES:\n"
-            "1. Only take A+ setups where Macro/Sentiment, H4/H1 SMC trend, and Liquidity/OB/FVG align.\n"
+            "1. Only take A+ setups where HTF SMC trend (or H1 inside H4 range) and Liquidity/OB/FVG align without major macro opposition.\n"
             "2. For BUY_LIMIT / SELL_LIMIT, snap entry/SL/TP to the Anchored OB/FVG levels above whenever valid.\n"
             "3. Never trade against H4 trend unless structure has a confirmed CHoCH + strong macro catalyst.\n"
             f"4. Minimum Reward-to-Risk is 1:{self.settings.min_rr_ratio:.1f}, and SL distance must be 0.5x-3.5x H1 ATR(14).\n"
-            "5. If outside London/NY kill zone, during HMR blackout, or if macro conflicts with SMC, return order_intent='NONE'."
+            f"{rule_5}"
         )
 
         resp = self._client.models.generate_content(
