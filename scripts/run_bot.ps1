@@ -21,5 +21,10 @@ if (-not (Test-Path $VenvPython)) {
     & $VenvPython -m pip install -r requirements.txt
 }
 
+$StopScript = Join-Path $PSScriptRoot "stop_bot.ps1"
+if (Test-Path $StopScript) {
+    & $StopScript
+}
+
 Write-Host "Starting EA-LearningX AI & Telegram service..." -ForegroundColor Green
 & $VenvPython -m python.src.main

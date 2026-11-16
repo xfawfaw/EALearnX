@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from logging.handlers import RotatingFileHandler
 
 from .analyst import GoldAnalyst
@@ -26,7 +27,7 @@ def _configure_logging() -> None:
     )
     file_handler.setFormatter(formatter)
 
-    stream_handler = logging.StreamHandler()
+    stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setFormatter(formatter)
 
     root = logging.getLogger()
