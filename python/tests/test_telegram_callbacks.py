@@ -387,5 +387,49 @@ def test_chart_card_renders_with_ml_prediction_pills() -> None:
     assert len(png) > 5000
 
 
+def test_approve_confirm_signal_mints_fresh_signal_id_for_mt5(tmp_path: Path) -> None:
+    import time as _time
+
+    ctrl = _make_controller(tmp_path, default_mode="confirm")
+    orig_id = "ml_m15_precision_1760100000_abc123"
+    pending_sig = EaSignalPayload(
+        signal_id=orig_id,
+        generated_at_unix=int(_time.time()),
+        expires_at_unix=int(_time.time()) + 900,
+        bias="BULLISH",
+        order_intent="MARKET_BUY",
+        trade_allowed=True,
+        sl_price=3876.0,
+        tp_price=3895.0,
+        confidence=0.69,
+        max_hold_until_unix=int(_time.time()) + 14400,
+        strategy_mode="M15_PRECISION",
+        regime="TRENDING",
+    )
+    ctrl.runtime.pending_signals[orig_id] = pending_sig
+
+    reply_text = AsyncMock()
+    query = SimpleNamespace(
+        data=f"approve:{orig_id}",
+        answer=AsyncMock(),
+        edit_message_reply_markup=AsyncMock(),
+        message=SimpleNamespace(reply_text=reply_text),
+    )
+    upd = SimpleNamespace(
+        effective_user=SimpleNamespace(id=5462088246),
+        callback_query=query,
+        message=None,
+    )
+    ctx = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+
+    asyncio.run(ctrl.handle_callback(upd, ctx))  # type: ignore[arg-type]
+
+    written = EaSignalPayload.model_validate_json(ctrl.bridge.signal_path.read_text(encoding="utf-8"))
+    assert written.trade_allowed is True
+    assert written.signal_id != orig_id
+    assert written.signal_id.startswith("ml_app_")
+
+
+
 
 

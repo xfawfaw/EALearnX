@@ -7,6 +7,7 @@ import html
 import io
 import logging
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import time as dt_time, timezone
 
@@ -1041,10 +1042,17 @@ class TelegramController:
                     parse_mode=ParseMode.HTML,
                 )
                 return
-            self.bridge.write_signal(sig)
+            approved_sig = sig.model_copy(
+                update={
+                    "signal_id": f"ml_app_{uuid.uuid4().hex[:8]}",
+                    "generated_at_unix": int(time.time()),
+                    "trade_allowed": True,
+                }
+            )
+            self.bridge.write_signal(approved_sig)
             await query.edit_message_reply_markup(reply_markup=self._analysis_keyboard())
             await query.message.reply_text(
-                f"✅ <b>Approved</b> <code>{html.escape(sig.order_intent)}</code> (<code>{html.escape(sig_id)}</code>) → sent to MT5 EA.",
+                f"✅ <b>Approved</b> <code>{html.escape(approved_sig.order_intent)}</code> (<code>{html.escape(approved_sig.signal_id)}</code>) → sent to MT5 EA.",
                 parse_mode=ParseMode.HTML,
             )
             return

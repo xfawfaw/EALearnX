@@ -216,6 +216,16 @@ class MlSignalRunner:
         if is_blackout:
             blockers.append(blackout_reason)
 
+        ea_state = self.bridge.read_ea_state()
+        if ea_state is not None:
+            unheld = [p for p in ea_state.positions if not p.held]
+            if unheld:
+                blockers.append(f"Active unheld position #{unheld[0].ticket} running")
+
+        _, _, spread_usd = self.mt5_feed.fetch_tick_spread()
+        if spread_usd > 0.60:
+            blockers.append(f"Spread ${spread_usd:.2f} > $0.60 limit")
+
         trade_allowed = (
             pred.order_intent != "NONE"
             and execution_mode == "auto"

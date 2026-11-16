@@ -399,6 +399,20 @@ void ManageOpenPositions()
            }
         }
      }
+
+   // Clean up stale LX_MAXH_ globals for positions closed via SL/TP/manual
+   string maxh_prefix = "LX_MAXH_" + IntegerToString(InpMagicNumber) + "_";
+   int prefix_len = StringLen(maxh_prefix);
+   for(int gv_i = GlobalVariablesTotal() - 1; gv_i >= 0; gv_i--)
+     {
+      string gv_name = GlobalVariableName(gv_i);
+      if(StringFind(gv_name, maxh_prefix) == 0)
+        {
+         ulong gv_ticket = (ulong)StringToInteger(StringSubstr(gv_name, prefix_len));
+         if(gv_ticket == 0 || !PositionSelectByTicket(gv_ticket))
+            GlobalVariableDel(gv_name);
+        }
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -644,7 +658,8 @@ void ProcessAiSignal()
    CountMyOrders(open_pos, pending_ord);
 
    double stops_dist = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
-   string comment = "LX_" + StringSubstr(sig_id, 0, 12);
+   string sig_tail = (StringLen(sig_id) > 14) ? StringSubstr(sig_id, StringLen(sig_id) - 14, 14) : sig_id;
+   string comment = "LX_" + sig_tail;
 
    if(intent == "MARKET_BUY" || intent == "MARKET_SELL")
      {
@@ -693,12 +708,20 @@ void ProcessAiSignal()
          PrintFormat("[EA-LearningX] %s executed: lots=%.2f sl=%.2f tp=%.2f max_hold=%I64d", intent, lots, sl_price, tp_price, max_hold_until);
          if(max_hold_until > 0)
            {
-            for(int pi = PositionsTotal() - 1; pi >= 0; pi--)
+            ulong order_ticket = g_trade.ResultOrder();
+            if(order_ticket > 0 && PositionSelectByTicket(order_ticket))
               {
-               if(g_pos.SelectByIndex(pi) && g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.Comment() == comment)
+               SetMaxHoldUntil(order_ticket, max_hold_until);
+              }
+            else
+              {
+               for(int pi = PositionsTotal() - 1; pi >= 0; pi--)
                  {
-                  if(GetMaxHoldUntil(g_pos.Ticket()) == 0)
-                     SetMaxHoldUntil(g_pos.Ticket(), max_hold_until);
+                  if(g_pos.SelectByIndex(pi) && g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.Comment() == comment)
+                    {
+                     if(GetMaxHoldUntil(g_pos.Ticket()) == 0)
+                        SetMaxHoldUntil(g_pos.Ticket(), max_hold_until);
+                    }
                  }
               }
            }
