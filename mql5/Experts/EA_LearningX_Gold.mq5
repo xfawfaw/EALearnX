@@ -26,16 +26,21 @@ input long   InpMagicNumber         = 20261114;      // Magic Number
 input string InpBridgeFolder        = "EA-LearningX";// Subfolder inside Common\Files
 input int    InpTimerSeconds        = 2;             // Bridge poll & state sync interval (sec)
 
-input group "=== M1 Trailing Stop-and-Reverse (SAR) Engine ==="
-input bool          InpUseSarEngine       = true;             // Enable fast M1 Trailing Stop-and-Reverse
+input group "=== M1 Momentum & Tight Trailing Engine ==="
+input bool          InpUseSarEngine       = true;             // Enable fast M1 Tight Trailing Engine
+input bool          InpAllowInstantFlip   = false;            // False=Trend-only (no chop whip-flips), True=SAR flip
 input ENUM_LOT_MODE InpLotMode            = LOT_DYNAMIC_RISK; // Lot Sizing Mode
 input double        InpFixedLot           = 0.05;             // Starter Fixed Lot (used when LOT_FIXED)
-input double        InpSAR_MinTrailUSD    = 0.35;             // Min Ultra-Tight SAR trail distance (USD)
-input double        InpSAR_MaxTrailUSD    = 0.55;             // Max Ultra-Tight SAR trail distance (USD)
-input double        InpSAR_TrailStepUSD   = 0.03;             // Pending Stop ratchet step (USD)
-input double        InpSAR_SpreadMult     = 1.35;             // Min trail multiple of spread
-input double        InpSAR_HardSL_USD     = 0.0;              // Emergency Hard Gap-SL (USD, 0=pure SAR only)
-input int           InpSAR_FlipCooldownSec= 1;                // Cooldown between flip actions (sec)
+input double        InpMinAdxM1           = 22.0;             // Min M1 ADX(14) trend strength to enter (0=off)
+input double        InpMinAtrM1_USD       = 0.35;             // Min M1 ATR(14) volatility to avoid dead chop
+input double        InpSAR_MinTrailUSD    = 0.65;             // Min Tight Trail / SL distance (USD)
+input double        InpSAR_MaxTrailUSD    = 1.10;             // Max Tight Trail / SL distance (USD)
+input double        InpSAR_TrailStepUSD   = 0.05;             // Trailing SL ratchet step (USD)
+input double        InpSAR_SpreadMult     = 2.6;              // Min trail multiple of spread
+input double        InpTightBE_TriggerUSD = 0.45;             // Profit (USD move) to trigger instant BE lock
+input double        InpTightBE_LockUSD    = 0.15;             // Locked profit buffer at BE (USD)
+input double        InpSAR_HardSL_USD     = 0.0;              // Extra Hard SL if InpAllowInstantFlip=true (0=use tight SL)
+input int           InpSAR_FlipCooldownSec= 15;               // Post-close cooldown before next entry (sec)
 
 input group "=== Risk & Exness Safety ==="
 input double InpRiskPercent         = 0.5;           // Risk per trade (% of equity)
@@ -81,10 +86,12 @@ bool     g_daily_halt       = false;
 datetime g_last_context_bar = 0;
 
 int      g_atr_m1_handle    = INVALID_HANDLE;
+int      g_adx_m1_handle    = INVALID_HANDLE;
 int      g_ema_fast_handle  = INVALID_HANDLE;
 int      g_ema_slow_handle  = INVALID_HANDLE;
+int      g_ema_mid_handle   = INVALID_HANDLE;
 datetime g_last_sar_action  = 0;
-double   g_last_sar_dist    = 1.00;
+double   g_last_sar_dist    = 0.80;
 
 //+------------------------------------------------------------------+
 //| Helper: Normalize price to symbol digits & tick size             |
@@ -122,7 +129,7 @@ void UpdateDailyRiskState()
    if(g_last_day_of_year != dt.day_of_year)
      {
       g_last_day_of_year = dt.day_of_year;
-      g_daily_start_eq   = MathMax(AccountInfoDouble(ACCOUNT_EQUITY), AccountInfoDouble(ACCOUNT_BALANCE));
+      g_daily_start_eq   = AccountInfoDouble(ACCOUNT_BALANCE);
       g_daily_halt       = false;
      }
 
@@ -698,6 +705,56 @@ void ProcessAiSignal()
   }
 
 //+------------------------------------------------------------------+
+//| Helper: Serialize last 20 closed EA deals for exact PnL sync     |
+//+------------------------------------------------------------------+
+string BuildClosedDealsJson()
+  {
+   datetime to_t   = TimeCurrent();
+   datetime from_t = to_t - 86400;
+   if(!HistorySelect(from_t, to_t))
+      return "[]";
+
+   string out = "[";
+   int total = HistoryDealsTotal();
+   int added = 0;
+   for(int i = total - 1; i >= 0 && added < 20; i--)
+     {
+      ulong deal_t = HistoryDealGetTicket(i);
+      if(deal_t == 0)
+         continue;
+      if(HistoryDealGetString(deal_t, DEAL_SYMBOL) != _Symbol)
+         continue;
+      if(HistoryDealGetInteger(deal_t, DEAL_MAGIC) != InpMagicNumber)
+         continue;
+      long entry_mode = HistoryDealGetInteger(deal_t, DEAL_ENTRY);
+      if(entry_mode != DEAL_ENTRY_OUT && entry_mode != DEAL_ENTRY_INOUT)
+         continue;
+
+      long dtype = HistoryDealGetInteger(deal_t, DEAL_TYPE);
+      string orig_side = (dtype == DEAL_TYPE_SELL) ? "BUY" : "SELL";
+      long pos_id = HistoryDealGetInteger(deal_t, DEAL_POSITION_ID);
+      double net_pnl = HistoryDealGetDouble(deal_t, DEAL_PROFIT)
+                     + HistoryDealGetDouble(deal_t, DEAL_SWAP)
+                     + HistoryDealGetDouble(deal_t, DEAL_COMMISSION);
+
+      if(added > 0)
+         out += ",";
+      out += StringFormat(
+         "{\"pos_id\":%I64d,\"side\":\"%s\",\"volume\":%.2f,\"close_price\":%.2f,\"net_pnl\":%.2f,\"closed_at\":%I64d}",
+         pos_id,
+         orig_side,
+         HistoryDealGetDouble(deal_t, DEAL_VOLUME),
+         HistoryDealGetDouble(deal_t, DEAL_PRICE),
+         net_pnl,
+         HistoryDealGetInteger(deal_t, DEAL_TIME)
+      );
+      added++;
+     }
+   out += "]";
+   return out;
+  }
+
+//+------------------------------------------------------------------+
 //| Export live EA & Account State to ea_state.json                  |
 //+------------------------------------------------------------------+
 void ExportEaState()
@@ -771,7 +828,8 @@ void ExportEaState()
       "\"last_signal_id\":\"%s\","
       "\"last_command_id\":\"%s\","
       "\"positions\":%s,"
-      "\"pending_orders\":%s"
+      "\"pending_orders\":%s,"
+      "\"closed_deals\":%s"
       "}",
       now_utc, JsonEscape(_Symbol), (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS),
       bid, ask, ask - bid, bal, eq, AccountInfoDouble(ACCOUNT_MARGIN_FREE),
@@ -781,7 +839,7 @@ void ExportEaState()
       hmr_active ? "true" : "false",
       JsonEscape(g_last_signal_id),
       JsonEscape(g_last_command_id),
-      pos_json, ord_json
+      pos_json, ord_json, BuildClosedDealsJson()
    );
 
    WriteCommonUtf8File(g_state_path, json);
@@ -857,7 +915,7 @@ void ExportMarketContext(const bool force = false)
   }
 
 //+------------------------------------------------------------------+
-//| Compute smart spread-safe M1 ATR Stop-and-Reverse distance (USD) |
+//| Compute smart spread-safe tight trail distance (USD)             |
 //+------------------------------------------------------------------+
 double GetSmartSarDistanceUSD()
   {
@@ -874,7 +932,7 @@ double GetSmartSarDistanceUSD()
          atr_m1 = buf[0];
      }
 
-   double base_dist = (atr_m1 > 0.0) ? (atr_m1 * 1.15) : InpSAR_MinTrailUSD;
+   double base_dist = (atr_m1 > 0.0) ? (atr_m1 * 1.4) : InpSAR_MinTrailUSD;
    base_dist = MathMax(InpSAR_MinTrailUSD, MathMin(InpSAR_MaxTrailUSD, base_dist));
    double floor_dist = MathMax(spread * InpSAR_SpreadMult, stops_dist + 0.15);
    double eff = MathMax(base_dist, floor_dist);
@@ -883,40 +941,52 @@ double GetSmartSarDistanceUSD()
   }
 
 //+------------------------------------------------------------------+
-//| Determine initial M1 momentum direction when flat                |
+//| Anti-Chop M1 Expansion Direction (ADX + ATR + EMA 5/13/26)       |
 //+------------------------------------------------------------------+
 bool GetInitialSarDirection(ENUM_ORDER_TYPE &out_type)
   {
-   double ema_fast[], ema_slow[];
-   if(g_ema_fast_handle != INVALID_HANDLE && g_ema_slow_handle != INVALID_HANDLE)
+   double atr_buf[];
+   if(g_atr_m1_handle != INVALID_HANDLE && CopyBuffer(g_atr_m1_handle, 0, 1, 1, atr_buf) > 0)
+     {
+      if(atr_buf[0] < InpMinAtrM1_USD)
+         return false;
+     }
+
+   double adx_val = 25.0, pdi_val = 0.0, mdi_val = 0.0;
+   if(InpMinAdxM1 > 0.0 && g_adx_m1_handle != INVALID_HANDLE)
+     {
+      double adx_buf[], pdi_buf[], mdi_buf[];
+      if(CopyBuffer(g_adx_m1_handle, 0, 0, 1, adx_buf) <= 0 ||
+         CopyBuffer(g_adx_m1_handle, 1, 0, 1, pdi_buf) <= 0 ||
+         CopyBuffer(g_adx_m1_handle, 2, 0, 1, mdi_buf) <= 0)
+         return false;
+      adx_val = adx_buf[0];
+      pdi_val = pdi_buf[0];
+      mdi_val = mdi_buf[0];
+      if(adx_val < InpMinAdxM1)
+         return false;
+     }
+
+   double ema_fast[], ema_slow[], ema_mid[];
+   if(g_ema_fast_handle != INVALID_HANDLE && g_ema_slow_handle != INVALID_HANDLE && g_ema_mid_handle != INVALID_HANDLE)
      {
       if(CopyBuffer(g_ema_fast_handle, 0, 0, 1, ema_fast) > 0 &&
-         CopyBuffer(g_ema_slow_handle, 0, 0, 1, ema_slow) > 0)
+         CopyBuffer(g_ema_slow_handle, 0, 0, 1, ema_slow) > 0 &&
+         CopyBuffer(g_ema_mid_handle, 0, 0, 1, ema_mid) > 0)
         {
-         if(ema_fast[0] > ema_slow[0] + _Point)
+         double c0 = iClose(_Symbol, PERIOD_M1, 0);
+         if(ema_fast[0] > ema_slow[0] && ema_slow[0] > ema_mid[0] && c0 > ema_fast[0] && (InpMinAdxM1 <= 0.0 || pdi_val > mdi_val))
            {
             out_type = ORDER_TYPE_BUY;
             return true;
            }
-         if(ema_fast[0] < ema_slow[0] - _Point)
+         if(ema_fast[0] < ema_slow[0] && ema_slow[0] < ema_mid[0] && c0 < ema_fast[0] && (InpMinAdxM1 <= 0.0 || mdi_val > pdi_val))
            {
             out_type = ORDER_TYPE_SELL;
             return true;
            }
+         return false;
         }
-     }
-
-   double c1 = iClose(_Symbol, PERIOD_M1, 1);
-   double o1 = iOpen(_Symbol, PERIOD_M1, 1);
-   if(c1 > o1)
-     {
-      out_type = ORDER_TYPE_BUY;
-      return true;
-     }
-   if(c1 < o1)
-     {
-      out_type = ORDER_TYPE_SELL;
-      return true;
      }
    return false;
   }
@@ -936,12 +1006,67 @@ void DeleteStrayPendingExcept(const ulong keep_ticket)
   }
 
 //+------------------------------------------------------------------+
-//| M1 Trailing Stop-and-Reverse Engine (Hedge Close-on-Flip safe)   |
+//| Tight Real MT5 SL + Fast BE Lock + Tick Trailing (Never 0 SL)    |
+//+------------------------------------------------------------------+
+void TightTrailOpenPositions(const double trail_dist)
+  {
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   if(ask <= 0.0 || bid <= 0.0)
+      return;
+   double stops_dist = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
+   double min_gap    = MathMax(stops_dist + 0.03, 0.05);
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      if(!g_pos.SelectByIndex(i) || g_pos.Symbol() != _Symbol || g_pos.Magic() != InpMagicNumber)
+         continue;
+      if(IsHeldPosition(g_pos.Ticket(), g_pos.Comment()))
+         continue;
+
+      ulong  ticket = g_pos.Ticket();
+      double open_p = g_pos.PriceOpen();
+      double cur_sl = g_pos.StopLoss();
+      double cur_tp = g_pos.TakeProfit();
+
+      if(g_pos.PositionType() == POSITION_TYPE_BUY)
+        {
+         double desired_sl = NormPrice(bid - trail_dist);
+         if((bid - open_p) >= InpTightBE_TriggerUSD)
+            desired_sl = MathMax(desired_sl, NormPrice(open_p + InpTightBE_LockUSD));
+
+         if(desired_sl < bid - min_gap)
+           {
+            if(cur_sl == 0.0 || desired_sl >= cur_sl + InpSAR_TrailStepUSD)
+               g_trade.PositionModify(ticket, desired_sl, cur_tp);
+           }
+        }
+      else if(g_pos.PositionType() == POSITION_TYPE_SELL)
+        {
+         double desired_sl = NormPrice(ask + trail_dist);
+         if((open_p - ask) >= InpTightBE_TriggerUSD)
+            desired_sl = MathMin(desired_sl, NormPrice(open_p - InpTightBE_LockUSD));
+
+         if(desired_sl > ask + min_gap)
+           {
+            if(cur_sl == 0.0 || desired_sl <= cur_sl - InpSAR_TrailStepUSD)
+               g_trade.PositionModify(ticket, desired_sl, cur_tp);
+           }
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| M1 Momentum + Tight Trailing Engine (Safe Real SL + Optional SAR)|
 //+------------------------------------------------------------------+
 void ManageSarEngine()
   {
    if(!InpUseSarEngine)
       return;
+
+   double trail_dist = GetSmartSarDistanceUSD();
+   // Always enforce & ratchet real SL on open positions even during Pause/Halt/Blackout
+   TightTrailOpenPositions(trail_dist);
 
    long now_utc = (long)TimeGMT();
    bool trading_blocked = g_paused_by_user || g_daily_halt || (g_blackout_until > now_utc) ||
@@ -953,7 +1078,7 @@ void ManageSarEngine()
    if(trading_blocked)
      {
       if(pending_ord > 0)
-         CancelAllPendingOrders("Paused/Blackout SAR Guard");
+         CancelAllPendingOrders("Paused/Blackout Guard (Real SL preserved)");
       return;
      }
 
@@ -964,7 +1089,7 @@ void ManageSarEngine()
    double spread = ask - bid;
    double stops_dist = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
 
-   // State 2: Hedge flip occurred (2+ active SAR positions) -> keep newest, close older unheld opposite(s)
+   // State 2: Hedge flip cleanup when 2+ unheld positions exist -> keep newest, close older
    if(open_pos > 1)
      {
       ulong newest_ticket = 0;
@@ -992,9 +1117,9 @@ void ManageSarEngine()
          if(g_pos.Ticket() != newest_ticket)
            {
             if(!g_trade.PositionClose(g_pos.Ticket()))
-               PrintFormat("[EA-LearningX] SAR flip close failed #%I64u: %s", g_pos.Ticket(), g_trade.ResultRetcodeDescription());
+               PrintFormat("[EA-LearningX] Flip close failed #%I64u: %s", g_pos.Ticket(), g_trade.ResultRetcodeDescription());
             else
-               PrintFormat("[EA-LearningX] SAR flip closed old #%I64u, active #%I64u", g_pos.Ticket(), newest_ticket);
+               PrintFormat("[EA-LearningX] Flip closed old #%I64u, active #%I64u", g_pos.Ticket(), newest_ticket);
            }
         }
 
@@ -1004,11 +1129,19 @@ void ManageSarEngine()
       return;
      }
 
-   double sar_dist = GetSmartSarDistanceUSD();
-
-   // State 3 & 4: 1 active SAR position -> maintain & ratchet tight opposite Stop-and-Reverse order
+   // State 3 & 4: 1 active unheld position
    if(open_pos == 1)
      {
+      g_last_sar_action = TimeCurrent();
+
+      if(!InpAllowInstantFlip)
+        {
+         // Trend-only tight trailing mode: no blind instant flip order needed; TightTrailOpenPositions manages SL.
+         if(pending_ord > 0)
+            DeleteStrayPendingExcept(0);
+         return;
+        }
+
       ulong  pos_ticket = 0;
       ENUM_POSITION_TYPE pos_type = POSITION_TYPE_BUY;
       double pos_vol = 0.0;
@@ -1029,7 +1162,6 @@ void ManageSarEngine()
 
       ENUM_ORDER_TYPE desired_stop_type = (pos_type == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL_STOP : ORDER_TYPE_BUY_STOP;
 
-      // Locate matching pending SAR stop
       ulong  sar_ord_ticket = 0;
       double sar_ord_price  = 0.0;
       for(int i = OrdersTotal() - 1; i >= 0; i--)
@@ -1048,35 +1180,22 @@ void ManageSarEngine()
         }
 
       double target_stop = (pos_type == POSITION_TYPE_BUY)
-                           ? NormPrice(bid - sar_dist)
-                           : NormPrice(ask + sar_dist);
+                           ? NormPrice(bid - trail_dist)
+                           : NormPrice(ask + trail_dist);
       double min_gap = MathMax(stops_dist + 0.03, 0.05);
-      double opp_sl  = 0.0;
-      if(InpSAR_HardSL_USD > 0.0)
-         opp_sl = (desired_stop_type == ORDER_TYPE_SELL_STOP)
-                  ? NormPrice(target_stop + InpSAR_HardSL_USD)
-                  : NormPrice(target_stop - InpSAR_HardSL_USD);
+      double opp_sl  = (desired_stop_type == ORDER_TYPE_SELL_STOP)
+                       ? NormPrice(target_stop + ((InpSAR_HardSL_USD > 0.0) ? InpSAR_HardSL_USD : trail_dist))
+                       : NormPrice(target_stop - ((InpSAR_HardSL_USD > 0.0) ? InpSAR_HardSL_USD : trail_dist));
 
       if(sar_ord_ticket == 0)
         {
          if(desired_stop_type == ORDER_TYPE_SELL_STOP && target_stop < bid - min_gap)
-           {
-            if(!g_trade.SellStop(pos_vol, target_stop, _Symbol, opp_sl, 0.0, ORDER_TIME_GTC, 0, "LX_SAR"))
-               PrintFormat("[EA-LearningX] SAR SellStop failed @ %.2f: %s", target_stop, g_trade.ResultRetcodeDescription());
-            else
-               PrintFormat("[EA-LearningX] SAR SELL_STOP placed @ %.2f (dist=$%.2f)", target_stop, sar_dist);
-           }
+            g_trade.SellStop(pos_vol, target_stop, _Symbol, opp_sl, 0.0, ORDER_TIME_GTC, 0, "LX_SAR");
          else if(desired_stop_type == ORDER_TYPE_BUY_STOP && target_stop > ask + min_gap)
-           {
-            if(!g_trade.BuyStop(pos_vol, target_stop, _Symbol, opp_sl, 0.0, ORDER_TIME_GTC, 0, "LX_SAR"))
-               PrintFormat("[EA-LearningX] SAR BuyStop failed @ %.2f: %s", target_stop, g_trade.ResultRetcodeDescription());
-            else
-               PrintFormat("[EA-LearningX] SAR BUY_STOP placed @ %.2f (dist=$%.2f)", target_stop, sar_dist);
-           }
+            g_trade.BuyStop(pos_vol, target_stop, _Symbol, opp_sl, 0.0, ORDER_TIME_GTC, 0, "LX_SAR");
          return;
         }
 
-      // Ratchet pending SAR Stop strictly in winning direction
       if(desired_stop_type == ORDER_TYPE_SELL_STOP)
         {
          if(target_stop >= sar_ord_price + InpSAR_TrailStepUSD && target_stop < bid - min_gap)
@@ -1090,7 +1209,7 @@ void ManageSarEngine()
       return;
      }
 
-   // State 1: Flat (0 open) -> clean stale orders, check spread/cooldown, open M1 kickoff trade
+   // State 1: Flat (0 unheld open) -> clean stale orders, enforce spread & cooldown, check M1 ADX/EMA trend
    if(pending_ord > 0)
      {
       DeleteStrayPendingExcept(0);
@@ -1107,31 +1226,31 @@ void ManageSarEngine()
       return;
 
    double entry = (init_type == ORDER_TYPE_BUY) ? ask : bid;
-   double hard_sl = (InpSAR_HardSL_USD > 0.0)
-                    ? NormPrice((init_type == ORDER_TYPE_BUY) ? (entry - InpSAR_HardSL_USD) : (entry + InpSAR_HardSL_USD))
-                    : 0.0;
+   // Real protective SL attached right on entry (offset slightly wider if instant-flip SAR stop also placed)
+   double sl_offset = InpAllowInstantFlip ? (trail_dist + 0.15) : trail_dist;
+   double real_sl   = NormPrice((init_type == ORDER_TYPE_BUY) ? (bid - sl_offset) : (ask + sl_offset));
    double eff_risk_sl = NormPrice((init_type == ORDER_TYPE_BUY)
-                                  ? (entry - MathMax(sar_dist * 2.0, 2.0))
-                                  : (entry + MathMax(sar_dist * 2.0, 2.0)));
+                                  ? (entry - MathMax(trail_dist * 2.0, 2.0))
+                                  : (entry + MathMax(trail_dist * 2.0, 2.0)));
    double lots = CalculateLotSize(entry, eff_risk_sl, init_type);
    if(lots <= 0.0)
      {
-      Print("[EA-LearningX] SAR lot calculation returned 0.");
+      Print("[EA-LearningX] Momentum lot calculation returned 0.");
       return;
      }
 
    bool ok = (init_type == ORDER_TYPE_BUY)
-             ? g_trade.Buy(lots, _Symbol, entry, hard_sl, 0.0, "LX_SAR_INIT")
-             : g_trade.Sell(lots, _Symbol, entry, hard_sl, 0.0, "LX_SAR_INIT");
+             ? g_trade.Buy(lots, _Symbol, entry, real_sl, 0.0, "LX_MOM")
+             : g_trade.Sell(lots, _Symbol, entry, real_sl, 0.0, "LX_MOM");
    if(ok)
      {
       g_last_sar_action = TimeCurrent();
-      PrintFormat("[EA-LearningX] SAR init %s @ %.2f lots=%.2f (trail=$%.2f)",
-                  (init_type == ORDER_TYPE_BUY ? "BUY" : "SELL"), entry, lots, sar_dist);
+      PrintFormat("[EA-LearningX] Momentum %s @ %.2f lots=%.2f sl=%.2f (trail=$%.2f)",
+                  (init_type == ORDER_TYPE_BUY ? "BUY" : "SELL"), entry, lots, real_sl, trail_dist);
      }
    else
      {
-      PrintFormat("[EA-LearningX] SAR init failed: %s", g_trade.ResultRetcodeDescription());
+      PrintFormat("[EA-LearningX] Momentum entry failed: %s", g_trade.ResultRetcodeDescription());
      }
   }
 
@@ -1179,8 +1298,10 @@ int OnInit()
    ConfigureFillingMode();
 
    g_atr_m1_handle   = iATR(_Symbol, PERIOD_M1, 14);
+   g_adx_m1_handle   = iADX(_Symbol, PERIOD_M1, 14);
    g_ema_fast_handle = iMA(_Symbol, PERIOD_M1, 5, 0, MODE_EMA, PRICE_CLOSE);
    g_ema_slow_handle = iMA(_Symbol, PERIOD_M1, 13, 0, MODE_EMA, PRICE_CLOSE);
+   g_ema_mid_handle  = iMA(_Symbol, PERIOD_M1, 26, 0, MODE_EMA, PRICE_CLOSE);
 
    UpdateDailyRiskState();
    ExportMarketContext(true);
@@ -1188,8 +1309,8 @@ int OnInit()
    UpdateChartComment();
 
    EventSetTimer(MathMax(1, InpTimerSeconds));
-   PrintFormat("[EA-LearningX] Initialized on %s (Magic=%I64d, SAR=%s)",
-               _Symbol, InpMagicNumber, InpUseSarEngine ? "ON" : "OFF");
+   PrintFormat("[EA-LearningX] Initialized on %s (Magic=%I64d, TightMom=%s, InstantFlip=%s)",
+               _Symbol, InpMagicNumber, InpUseSarEngine ? "ON" : "OFF", InpAllowInstantFlip ? "ON" : "OFF");
    return(INIT_SUCCEEDED);
   }
 
@@ -1200,8 +1321,10 @@ void OnDeinit(const int reason)
   {
    EventKillTimer();
    if(g_atr_m1_handle != INVALID_HANDLE)   IndicatorRelease(g_atr_m1_handle);
+   if(g_adx_m1_handle != INVALID_HANDLE)   IndicatorRelease(g_adx_m1_handle);
    if(g_ema_fast_handle != INVALID_HANDLE) IndicatorRelease(g_ema_fast_handle);
    if(g_ema_slow_handle != INVALID_HANDLE) IndicatorRelease(g_ema_slow_handle);
+   if(g_ema_mid_handle != INVALID_HANDLE)  IndicatorRelease(g_ema_mid_handle);
    Comment("");
   }
 

@@ -410,6 +410,7 @@ class TelegramController:
         st = self.journal.get_stats()
         wr_bar = self._meter_bar(st.win_rate_pct / 100.0, 10)
         pnl_icon = "🟢" if st.net_realized_pnl >= 0 else "🔴"
+        pf_txt = "∞" if st.profit_factor >= 99.0 else f"{st.profit_factor:.2f}"
         return (
             "📊 <b>EA-LearningX Performance Journal</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
@@ -417,7 +418,7 @@ class TelegramController:
             f"📥 <b>Trades Opened:</b> <code>{st.trades_opened}</code>  ·  <b>Closed:</b> <code>{st.trades_closed}</code>\n"
             f"🛡 <b>Break-Even Triggered:</b> <code>{st.be_triggered_count}</code>\n"
             f"🎯 <b>Win Rate:</b> <code>{wr_bar}</code> <b>{st.win_rate_pct:.1f}%</b> ({st.wins}W / {st.losses}L)\n"
-            f"{pnl_icon} <b>Net Closed PnL:</b> <code>${st.net_realized_pnl:+.2f}</code>"
+            f"⚖️ <b>Profit Factor:</b> <code>{pf_txt}</code>  |  {pnl_icon} <b>Realized PnL:</b> <code>{st.net_realized_pnl:+.2f}</code>"
         )
 
     def _status_keyboard(self, state: EaState | None = None) -> InlineKeyboardMarkup:
@@ -946,6 +947,8 @@ class TelegramController:
 
         for p in state.positions:
             self.journal.upsert_open_position(state.symbol, p)
+        if state.closed_deals:
+            self.journal.sync_closed_deals(state.symbol, state.closed_deals)
 
         if not self.runtime.state_initialized:
             self.runtime.known_position_tickets = set(pos_map.keys())

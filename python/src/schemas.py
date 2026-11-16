@@ -118,6 +118,17 @@ class EaPendingOrder(BaseModel):
     tp: float
 
 
+class EaClosedDeal(BaseModel):
+    """Closed position deal exported from MT5 deal history for exact PnL sync."""
+
+    pos_id: int
+    side: Literal["BUY", "SELL"]
+    volume: float
+    close_price: float
+    net_pnl: float
+    closed_at: int
+
+
 class EaState(BaseModel):
     """Live EA & account snapshot read from ea_state.json."""
 
@@ -138,6 +149,7 @@ class EaState(BaseModel):
     last_command_id: str = ""
     positions: list[EaPosition] = Field(default_factory=list)
     pending_orders: list[EaPendingOrder] = Field(default_factory=list)
+    closed_deals: list[EaClosedDeal] = Field(default_factory=list)
 
 
 class OhlcvBar(BaseModel):

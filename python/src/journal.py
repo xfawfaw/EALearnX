@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .schemas import AnalysisReport, EaPosition
+from .schemas import AnalysisReport, EaClosedDeal, EaPosition
 
 
 @dataclass
@@ -23,6 +23,7 @@ class JournalStats:
     losses: int
     win_rate_pct: float
     net_realized_pnl: float
+    profit_factor: float = 0.0
 
 
 class TradeJournal:
@@ -147,6 +148,40 @@ class TradeJournal:
                 (now, ticket),
             )
 
+    def sync_closed_deals(self, symbol: str, deals: list[EaClosedDeal]) -> None:
+        """Reconcile exact MT5 closed deal profit/swap/commission into SQLite."""
+        if not deals:
+            return
+        with self._connect() as conn:
+            for d in deals:
+                updated = conn.execute(
+                    """
+                    UPDATE trades
+                    SET last_profit = ?, closed_at = ?, status = 'CLOSED'
+                    WHERE ticket = ?
+                    """,
+                    (d.net_pnl, d.closed_at, d.pos_id),
+                ).rowcount
+                if updated == 0:
+                    conn.execute(
+                        """
+                        INSERT INTO trades (
+                            ticket, symbol, side, volume, open_price, sl, tp,
+                            opened_at, be_applied, last_profit, closed_at, status
+                        ) VALUES (?, ?, ?, ?, ?, 0.0, 0.0, ?, 0, ?, ?, 'CLOSED')
+                        """,
+                        (
+                            d.pos_id,
+                            symbol,
+                            d.side,
+                            d.volume,
+                            d.close_price,
+                            d.closed_at,
+                            d.net_pnl,
+                            d.closed_at,
+                        ),
+                    )
+
     def get_stats(self) -> JournalStats:
         """Compute journal statistics for /stats command."""
         with self._connect() as conn:
@@ -170,8 +205,15 @@ class TradeJournal:
             net_pnl = conn.execute(
                 "SELECT COALESCE(SUM(last_profit), 0.0) FROM trades WHERE status = 'CLOSED'"
             ).fetchone()[0]
+            gross_win = conn.execute(
+                "SELECT COALESCE(SUM(last_profit), 0.0) FROM trades WHERE status = 'CLOSED' AND last_profit > 0"
+            ).fetchone()[0]
+            gross_loss = conn.execute(
+                "SELECT COALESCE(ABS(SUM(last_profit)), 0.0) FROM trades WHERE status = 'CLOSED' AND last_profit <= 0"
+            ).fetchone()[0]
 
         win_rate = (wins / closed * 100.0) if closed > 0 else 0.0
+        pf = (float(gross_win) / float(gross_loss)) if gross_loss > 0 else (99.0 if gross_win > 0 else 0.0)
         return JournalStats(
             total_analyses=total_analyses,
             actionable_signals=actionable,
@@ -182,6 +224,7 @@ class TradeJournal:
             losses=losses,
             win_rate_pct=round(win_rate, 1),
             net_realized_pnl=round(float(net_pnl), 2),
+            profit_factor=round(pf, 2),
         )
 
     def format_learning_context(self, limit_trades: int = 8, limit_signals: int = 5) -> str:

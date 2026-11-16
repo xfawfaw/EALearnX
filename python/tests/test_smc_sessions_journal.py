@@ -14,6 +14,7 @@ from python.src.journal import TradeJournal
 from python.src.schemas import (
     AiTradeDecision,
     AnalysisReport,
+    EaClosedDeal,
     EaPosition,
     EaSignalPayload,
     MarketContext,
@@ -164,3 +165,18 @@ def test_journal_records_signals_and_trade_lifecycle(tmp_path: Path) -> None:
     assert "BUY: 1/1 wins" in learning_txt
     assert "#9001 BUY" in learning_txt
     assert "BUY_LIMIT (BULLISH)" in learning_txt
+
+    # Reconcile MT5 exact deal history (updating #9001 and inserting fast-closed #9002 loss)
+    journal.sync_closed_deals(
+        "XAUUSDm",
+        [
+            EaClosedDeal(pos_id=9001, side="BUY", volume=0.10, close_price=2645.0, net_pnl=50.0, closed_at=1760000100),
+            EaClosedDeal(pos_id=9002, side="SELL", volume=0.10, close_price=2646.0, net_pnl=-20.0, closed_at=1760000200),
+        ],
+    )
+    updated_stats = journal.get_stats()
+    assert updated_stats.trades_closed == 2
+    assert updated_stats.wins == 1
+    assert updated_stats.losses == 1
+    assert updated_stats.net_realized_pnl == 30.0
+    assert updated_stats.profit_factor == 2.5
