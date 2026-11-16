@@ -23,12 +23,12 @@ import numpy as np
 from scipy.special import logsumexp
 from sklearn.preprocessing import StandardScaler
 
+from python.src.ml_features import REGIME_COLUMNS
 from python.src.schemas import RegimeLabel
 
 logger = logging.getLogger(__name__)
 
 CANONICAL_REGIMES: tuple[RegimeLabel, ...] = ("TRENDING", "RANGING", "VOLATILE")
-REGIME_COLUMNS: tuple[str, ...] = ("log_ret_1", "atr_pct_14", "adx_14")
 EPS: float = 1e-12
 
 
@@ -102,7 +102,9 @@ class RegimeModel:
             n_iter=200,
             random_state=random_state,
         )
-        hmm.fit(X_scaled)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"hmmlearn.*")
+            hmm.fit(X_scaled)
 
         # Map HMM states semantically back in unscaled domain
         unscaled_means = scaler.inverse_transform(hmm.means_)
