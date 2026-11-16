@@ -85,12 +85,13 @@ class Mt5Bridge:
         """Publish an AI signal payload for the MQL5 EA."""
         return self._atomic_write_json(self.signal_path, signal.model_dump())
 
-    def send_command(self, action: RemoteAction) -> EaCommandPayload:
+    def send_command(self, action: RemoteAction, ticket: int = 0) -> EaCommandPayload:
         """Publish an immediate control command for the MQL5 EA."""
         cmd = EaCommandPayload(
             command_id=uuid.uuid4().hex[:12],
             action=action,
             issued_at_unix=int(time.time()),
+            ticket=ticket,
         )
         self._atomic_write_json(self.command_path, cmd.model_dump())
         return cmd

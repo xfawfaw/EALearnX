@@ -216,10 +216,11 @@ class TelegramController:
             lines.append("   <i>None</i>")
         for p in state.positions:
             be_tag = " 🛡[BE]" if p.be_applied else ""
+            hold_tag = " 🔒<b>[KEPT]</b>" if p.held else " ⚡<i>[SAR]</i>"
             p_icon = "🟢" if p.profit >= 0 else "🔴"
             lines.append(
-                f"   {p_icon} <code>#{p.ticket} {p.type} {p.volume:.2f} @ {p.open_price:.2f}</code>\n"
-                f"      SL <code>{p.sl:.2f}</code> · TP <code>{p.tp:.2f}</code> · <b>${p.profit:+.2f}</b>{be_tag}"
+                f"   {p_icon} <code>#{p.ticket} {p.type} {p.volume:.2f} @ {p.open_price:.2f}</code>{hold_tag}\n"
+                f"      SL <code>{p.sl:.2f}</code> · TP <code>{p.tp:.2f}</code> · <b>{p.profit:+.2f}</b>{be_tag}"
             )
 
         lines.append(f"\n⏳ <b>Pending Orders ({len(state.pending_orders)}):</b>")
@@ -419,8 +420,25 @@ class TelegramController:
             f"{pnl_icon} <b>Net Closed PnL:</b> <code>${st.net_realized_pnl:+.2f}</code>"
         )
 
-    def _status_keyboard(self) -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup([
+    def _status_keyboard(self, state: EaState | None = None) -> InlineKeyboardMarkup:
+        rows: list[list[InlineKeyboardButton]] = []
+        if state is not None and state.positions:
+            for p in state.positions[:4]:
+                if p.held:
+                    rows.append([
+                        InlineKeyboardButton(
+                            f"🔓 Release #{p.ticket} to SAR",
+                            callback_data=f"unhold:{p.ticket}",
+                        )
+                    ])
+                else:
+                    rows.append([
+                        InlineKeyboardButton(
+                            f"🔒 Keep #{p.ticket} (Hold Safe)",
+                            callback_data=f"hold:{p.ticket}",
+                        )
+                    ])
+        rows.extend([
             [
                 InlineKeyboardButton("🔄 Refresh", callback_data="menu:status"),
                 InlineKeyboardButton("⚡ Analyze Now", callback_data="menu:analyze"),
@@ -430,6 +448,7 @@ class TelegramController:
                 InlineKeyboardButton("🎛 Panel", callback_data="menu:panel"),
             ],
         ])
+        return InlineKeyboardMarkup(rows)
 
     def _smc_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
@@ -471,7 +490,7 @@ class TelegramController:
         assert update.message is not None
         await update.message.reply_text(
             self._format_status(state),
-            reply_markup=self._status_keyboard(),
+            reply_markup=self._status_keyboard(state),
             parse_mode=ParseMode.HTML,
         )
 
@@ -784,9 +803,10 @@ class TelegramController:
                 )
                 return
             if action == "status":
+                st_live = self.bridge.read_ea_state()
                 await query.message.reply_text(
-                    self._format_status(self.bridge.read_ea_state()),
-                    reply_markup=self._status_keyboard(),
+                    self._format_status(st_live),
+                    reply_markup=self._status_keyboard(st_live),
                     parse_mode=ParseMode.HTML,
                 )
                 return
@@ -887,6 +907,19 @@ class TelegramController:
             )
             return
 
+        if data.startswith("hold:") or data.startswith("unhold:"):
+            is_hold = data.startswith("hold:")
+            ticket_val = int(data.split(":", 1)[1])
+            cmd = self.bridge.send_command("HOLD_TICKET" if is_hold else "UNHOLD_TICKET", ticket=ticket_val)
+            assert query.message is not None
+            msg = (
+                f"🔒 <b>Kept #{ticket_val}</b> (<code>{cmd.command_id}</code>) — M1 SAR will NOT close or flip this order; SAR will scalp on a separate order."
+                if is_hold
+                else f"🔓 <b>Released #{ticket_val}</b> (<code>{cmd.command_id}</code>) — returned to M1 SAR algorithm."
+            )
+            await query.message.reply_text(msg, reply_markup=self._status_keyboard(self.bridge.read_ea_state()), parse_mode=ParseMode.HTML)
+            return
+
         if data.startswith("reject:"):
             sig_id = data.split(":", 1)[1]
             self.runtime.pending_signals.pop(sig_id, None)
@@ -929,7 +962,7 @@ class TelegramController:
                     context,
                     f"{p_icon} <b>MT5 OPENED</b>  <code>#{p.ticket} {p.type} {p.volume:.2f} {html.escape(state.symbol)}</code>\n"
                     f"🎯 Entry <code>{p.open_price:.2f}</code> · 🛑 SL <code>{p.sl:.2f}</code> · 🏆 TP <code>{p.tp:.2f}</code>",
-                    reply_markup=self._status_keyboard(),
+                    reply_markup=self._status_keyboard(state),
                 )
 
         for ticket in sorted(be_set - self.runtime.known_be_tickets):

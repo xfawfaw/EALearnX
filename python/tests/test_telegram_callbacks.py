@@ -21,7 +21,9 @@ from python.src.journal import TradeJournal
 from python.src.schemas import (
     AiTradeDecision,
     AnalysisReport,
+    EaPosition,
     EaSignalPayload,
+    EaState,
     MarketContext,
     OhlcvBar,
     SessionStatus,
@@ -223,5 +225,63 @@ def test_analyze_button_continues_even_when_callback_answer_times_out(tmp_path: 
 
     ctrl.analyst.analyze.assert_awaited_once()
     send_photo_mock.assert_awaited_once()
+
+
+def test_hold_and_unhold_position_buttons_send_ticket_commands(tmp_path: Path) -> None:
+    ctrl = _make_controller(tmp_path, default_mode="auto")
+    state = EaState(
+        updated_at_unix=1794809005,
+        symbol="XAUUSDm",
+        digits=3,
+        bid=3840.66,
+        ask=3840.91,
+        spread_usd=0.25,
+        balance=1000000.0,
+        equity=1040000.0,
+        free_margin=1020000.0,
+        daily_pnl_usd=40000.0,
+        paused=False,
+        daily_halt=False,
+        hmr_blackout=False,
+        positions=[
+            EaPosition(
+                ticket=5056757525,
+                type="BUY",
+                volume=0.01,
+                open_price=3834.81,
+                sl=0.0,
+                tp=0.0,
+                profit=50000.0,
+                be_applied=False,
+                held=False,
+            )
+        ],
+    )
+    ctrl.bridge.read_ea_state = MagicMock(return_value=state)
+
+    kb = ctrl._status_keyboard(state)
+    callbacks = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert "hold:5056757525" in callbacks
+
+    reply_text = AsyncMock()
+    query = SimpleNamespace(
+        data="hold:5056757525",
+        answer=AsyncMock(),
+        edit_message_text=AsyncMock(),
+        message=SimpleNamespace(reply_text=reply_text),
+    )
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=5462088246),
+        callback_query=query,
+        message=None,
+    )
+    context = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+
+    asyncio.run(ctrl.handle_callback(update, context))  # type: ignore[arg-type]
+
+    cmd_raw = ctrl.bridge.command_path.read_text(encoding="utf-8")
+    assert '"HOLD_TICKET"' in cmd_raw
+    assert '5056757525' in cmd_raw
+
 
 

@@ -10,7 +10,15 @@ from pydantic import BaseModel, Field
 ExecutionMode = Literal["auto", "confirm", "pause"]
 Bias = Literal["BULLISH", "BEARISH", "NEUTRAL"]
 OrderIntent = Literal["NONE", "MARKET_BUY", "MARKET_SELL", "BUY_LIMIT", "SELL_LIMIT"]
-RemoteAction = Literal["CLOSE_ALL", "CANCEL_PENDING", "MOVE_BE_NOW", "PAUSE", "RESUME"]
+RemoteAction = Literal[
+    "CLOSE_ALL",
+    "CANCEL_PENDING",
+    "MOVE_BE_NOW",
+    "PAUSE",
+    "RESUME",
+    "HOLD_TICKET",
+    "UNHOLD_TICKET",
+]
 
 
 class AiTradeDecision(BaseModel):
@@ -82,6 +90,7 @@ class EaCommandPayload(BaseModel):
     command_id: str
     action: RemoteAction
     issued_at_unix: int
+    ticket: int = 0
 
 
 class EaPosition(BaseModel):
@@ -95,6 +104,7 @@ class EaPosition(BaseModel):
     tp: float
     profit: float
     be_applied: bool
+    held: bool = False
 
 
 class EaPendingOrder(BaseModel):

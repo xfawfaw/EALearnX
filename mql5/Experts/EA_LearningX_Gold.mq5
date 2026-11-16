@@ -383,6 +383,63 @@ void ManageOpenPositions()
   }
 
 //+------------------------------------------------------------------+
+//| Hold / Keep ticket helpers (exclude pinned positions from SAR)   |
+//+------------------------------------------------------------------+
+string HoldKey(const ulong ticket)
+  {
+   return "LX_HOLD_" + IntegerToString((long)ticket);
+  }
+
+bool IsHeldPosition(const ulong ticket, const string comment = "")
+  {
+   if(GlobalVariableCheck(HoldKey(ticket)))
+      return true;
+   if(comment != "" && StringFind(comment, "KEEP") >= 0)
+      return true;
+   return false;
+  }
+
+void SetHeldPosition(const ulong ticket, const bool hold)
+  {
+   if(ticket == 0)
+      return;
+   string key = HoldKey(ticket);
+   if(hold)
+     {
+      GlobalVariableSet(key, 1.0);
+      PrintFormat("[EA-LearningX] Locked position #%I64u as KEPT (ignored by SAR flips).", ticket);
+     }
+   else
+     {
+      GlobalVariableDel(key);
+      PrintFormat("[EA-LearningX] Released position #%I64u back to SAR management.", ticket);
+     }
+  }
+
+void CountSarOrders(int &sar_open, int &sar_pending, int &held_open)
+  {
+   sar_open    = 0;
+   sar_pending = 0;
+   held_open   = 0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      if(!g_pos.SelectByIndex(i) || g_pos.Symbol() != _Symbol || g_pos.Magic() != InpMagicNumber)
+         continue;
+      if(IsHeldPosition(g_pos.Ticket(), g_pos.Comment()))
+         held_open++;
+      else
+         sar_open++;
+     }
+
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      if(g_ord.SelectByIndex(i) && g_ord.Symbol() == _Symbol && g_ord.Magic() == InpMagicNumber)
+         sar_pending++;
+     }
+  }
+
+//+------------------------------------------------------------------+
 //| Process remote Telegram commands from ea_command.json            |
 //+------------------------------------------------------------------+
 void ProcessCommands()
@@ -397,7 +454,9 @@ void ProcessCommands()
 
    JsonGetString(json, "action", action, "");
    long issued_at = 0;
+   long cmd_ticket = 0;
    JsonGetLong(json, "issued_at_unix", issued_at, 0);
+   JsonGetLong(json, "ticket", cmd_ticket, 0);
 
    // Ignore stale commands older than 5 minutes
    if(issued_at > 0 && (long)TimeGMT() - issued_at > 300)
@@ -407,7 +466,7 @@ void ProcessCommands()
      }
 
    g_last_command_id = cmd_id;
-   PrintFormat("[EA-LearningX] Executing remote command: %s (id=%s)", action, cmd_id);
+   PrintFormat("[EA-LearningX] Executing remote command: %s (id=%s, ticket=%I64d)", action, cmd_id, cmd_ticket);
 
    if(action == "CLOSE_ALL")
       CloseAllPositions("Telegram CLOSE_ALL");
@@ -426,6 +485,10 @@ void ProcessCommands()
          g_daily_start_eq = AccountInfoDouble(ACCOUNT_EQUITY);
         }
      }
+   else if(action == "HOLD_TICKET" && cmd_ticket > 0)
+      SetHeldPosition((ulong)cmd_ticket, true);
+   else if(action == "UNHOLD_TICKET" && cmd_ticket > 0)
+      SetHeldPosition((ulong)cmd_ticket, false);
   }
 
 //+------------------------------------------------------------------+
@@ -659,11 +722,13 @@ void ExportEaState()
                      ? (g_pos.StopLoss() >= g_pos.PriceOpen() && g_pos.StopLoss() > 0.0)
                      : (g_pos.StopLoss() > 0.0 && g_pos.StopLoss() <= g_pos.PriceOpen());
 
+      bool is_held = IsHeldPosition(g_pos.Ticket(), g_pos.Comment());
       pos_json += StringFormat(
-         "{\"ticket\":%I64u,\"type\":\"%s\",\"volume\":%.2f,\"open_price\":%.2f,\"sl\":%.2f,\"tp\":%.2f,\"profit\":%.2f,\"be_applied\":%s}",
+         "{\"ticket\":%I64u,\"type\":\"%s\",\"volume\":%.2f,\"open_price\":%.2f,\"sl\":%.2f,\"tp\":%.2f,\"profit\":%.2f,\"be_applied\":%s,\"held\":%s}",
          g_pos.Ticket(), ptype, g_pos.Volume(), g_pos.PriceOpen(),
          g_pos.StopLoss(), g_pos.TakeProfit(), g_pos.Profit() + g_pos.Swap(),
-         be_done ? "true" : "false"
+         be_done ? "true" : "false",
+         is_held ? "true" : "false"
       );
      }
    pos_json += "]";
@@ -882,8 +947,8 @@ void ManageSarEngine()
    bool trading_blocked = g_paused_by_user || g_daily_halt || (g_blackout_until > now_utc) ||
                           !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED);
 
-   int open_pos = 0, pending_ord = 0;
-   CountMyOrders(open_pos, pending_ord);
+   int open_pos = 0, pending_ord = 0, held_pos = 0;
+   CountSarOrders(open_pos, pending_ord, held_pos);
 
    if(trading_blocked)
      {
@@ -899,7 +964,7 @@ void ManageSarEngine()
    double spread = ask - bid;
    double stops_dist = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
 
-   // State 2: Hedge flip occurred (2+ open positions) -> keep newest, close older opposite(s)
+   // State 2: Hedge flip occurred (2+ active SAR positions) -> keep newest, close older unheld opposite(s)
    if(open_pos > 1)
      {
       ulong newest_ticket = 0;
@@ -907,6 +972,8 @@ void ManageSarEngine()
       for(int i = PositionsTotal() - 1; i >= 0; i--)
         {
          if(!g_pos.SelectByIndex(i) || g_pos.Symbol() != _Symbol || g_pos.Magic() != InpMagicNumber)
+            continue;
+         if(IsHeldPosition(g_pos.Ticket(), g_pos.Comment()))
             continue;
          ulong t_msc = g_pos.TimeMsc();
          if(t_msc > newest_time || (t_msc == newest_time && g_pos.Ticket() > newest_ticket))
@@ -919,6 +986,8 @@ void ManageSarEngine()
       for(int i = PositionsTotal() - 1; i >= 0; i--)
         {
          if(!g_pos.SelectByIndex(i) || g_pos.Symbol() != _Symbol || g_pos.Magic() != InpMagicNumber)
+            continue;
+         if(IsHeldPosition(g_pos.Ticket(), g_pos.Comment()))
             continue;
          if(g_pos.Ticket() != newest_ticket)
            {
@@ -937,7 +1006,7 @@ void ManageSarEngine()
 
    double sar_dist = GetSmartSarDistanceUSD();
 
-   // State 3 & 4: 1 open position -> maintain & ratchet tight opposite Stop-and-Reverse order
+   // State 3 & 4: 1 active SAR position -> maintain & ratchet tight opposite Stop-and-Reverse order
    if(open_pos == 1)
      {
       ulong  pos_ticket = 0;
@@ -947,6 +1016,8 @@ void ManageSarEngine()
         {
          if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber)
            {
+            if(IsHeldPosition(g_pos.Ticket(), g_pos.Comment()))
+               continue;
             pos_ticket = g_pos.Ticket();
             pos_type   = g_pos.PositionType();
             pos_vol    = g_pos.Volume();
@@ -1069,8 +1140,8 @@ void ManageSarEngine()
 //+------------------------------------------------------------------+
 void UpdateChartComment()
   {
-   int open_pos = 0, pending_ord = 0;
-   CountMyOrders(open_pos, pending_ord);
+   int sar_open = 0, sar_pending = 0, held_pos = 0;
+   CountSarOrders(sar_open, sar_pending, held_pos);
    double eq  = AccountInfoDouble(ACCOUNT_EQUITY);
    double pnl = (g_daily_start_eq > 0.0) ? (eq - g_daily_start_eq) : 0.0;
    long now_utc = (long)TimeGMT();
@@ -1084,11 +1155,11 @@ void UpdateChartComment()
       "=== EA-LearningX (%s) ===\n"
       "Status: %s | SAR Trail: $%.2f | AI Bias: %s\n"
       "Equity: %.2f | Daily PnL: %+.2f | Spread: $%.2f\n"
-      "Open Positions: %d | Pending SAR Stops: %d\n"
+      "SAR Open: %d | Kept (Hold): %d | SAR Stops: %d\n"
       "Note: %s",
       _Symbol, status, g_last_sar_dist, g_ai_bias, eq, pnl,
       SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID),
-      open_pos, pending_ord, g_ai_reason
+      sar_open, held_pos, sar_pending, g_ai_reason
    ));
   }
 
