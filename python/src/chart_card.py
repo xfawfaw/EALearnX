@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .schemas import AnalysisReport, MarketContext, OhlcvBar, SmcSnapshot
+from .schemas import AnalysisReport, MarketContext, MlPrediction, OhlcvBar, SmcSnapshot
 
 # Dark institutional palette
 BG_CANVAS = (11, 15, 23, 255)
@@ -118,6 +118,7 @@ def _compute_price_bounds(
     bars: list[OhlcvBar],
     smc: SmcSnapshot | None,
     report: AnalysisReport | None,
+    ml_prediction: MlPrediction | None = None,
 ) -> tuple[float, float]:
     prices: list[float] = []
     for b in bars:
@@ -137,6 +138,10 @@ def _compute_price_bounds(
         for val in (d.limit_price, d.sl_price, d.tp_price):
             if val > 0:
                 prices.append(val)
+    elif ml_prediction is not None and ml_prediction.order_intent != "NONE":
+        for val in (ml_prediction.entry_price, ml_prediction.sl_price, ml_prediction.tp_price):
+            if val > 0:
+                prices.append(val)
 
     valid = [p for p in prices if p > 0]
     lo = min(valid)
@@ -154,8 +159,9 @@ def render_analysis_chart(
     market: MarketContext,
     report: AnalysisReport | None = None,
     smc: SmcSnapshot | None = None,
+    ml_prediction: MlPrediction | None = None,
 ) -> bytes | None:
-    """Render an H1 candlestick + SMC/Setup PNG chart card. Returns None if bars are missing."""
+    """Render an H1 candlestick + SMC/ML Setup PNG chart card. Returns None if bars are missing."""
     bars = market.h1_bars[-60:]
     if len(bars) < 5:
         return None
@@ -192,6 +198,17 @@ def render_analysis_chart(
         pill_x = _draw_pill(draw, pill_x, 19, f"SCORE {report.confluence_score}/5", (30, 58, 138, 255), TEXT_PRIMARY, f_pill)
         if report.session_status is not None:
             _draw_pill(draw, pill_x, 19, report.session_status.session_name.replace("_", " "), (39, 39, 58, 255), TEXT_MUTED, f_pill)
+    elif ml_prediction is not None:
+        bias_bg = (
+            (22, 101, 52, 255)
+            if ml_prediction.order_intent == "MARKET_BUY"
+            else (153, 27, 27, 255)
+            if ml_prediction.order_intent == "MARKET_SELL"
+            else (51, 65, 85, 255)
+        )
+        pill_x = _draw_pill(draw, pill_x, 19, f"{ml_prediction.timeframe} ML", (30, 58, 138, 255), TEXT_PRIMARY, f_pill)
+        pill_x = _draw_pill(draw, pill_x, 19, f"HMM {ml_prediction.regime}", (39, 39, 58, 255), TEXT_PRIMARY, f_pill)
+        _draw_pill(draw, pill_x, 19, f"{ml_prediction.order_intent}", bias_bg, TEXT_PRIMARY, f_pill)
     elif smc_data is not None:
         bias = smc_data.htf_aligned_bias
         bias_bg = (22, 101, 52, 255) if bias == "BULLISH" else (153, 27, 27, 255) if bias == "BEARISH" else (51, 65, 85, 255)
@@ -206,7 +223,7 @@ def render_analysis_chart(
 
     draw.rounded_rectangle([(plot_l, plot_t), (plot_r, plot_b)], radius=10, fill=BG_PLOT, outline=BORDER_SUBTLE, width=1)
 
-    p_lo, p_hi = _compute_price_bounds(bars, smc_data, report)
+    p_lo, p_hi = _compute_price_bounds(bars, smc_data, report, ml_prediction=ml_prediction)
     p_span = max(p_hi - p_lo, 1e-6)
 
     def y_of(price: float) -> int:
@@ -296,7 +313,7 @@ def render_analysis_chart(
     _draw_dashed_hline(draw, plot_l + 2, plot_r - 2, py, COLOR_PRICE, dash=6, gap=4, width=1)
     _draw_axis_tag(draw, plot_r, py, f"{last_price:.2f}", (202, 138, 4, 255), (15, 23, 42, 255), f_mono_bold)
 
-    # Trade Setup lines (active report decision or best anchored setup)
+    # Trade Setup lines (active report decision or live ML prediction)
     setup_entry, setup_sl, setup_tp, setup_label = 0.0, 0.0, 0.0, ""
     if report is not None and report.decision.order_intent != "NONE":
         d = report.decision
@@ -304,6 +321,16 @@ def render_analysis_chart(
         setup_sl = d.sl_price
         setup_tp = d.tp_price
         setup_label = d.order_intent
+    elif ml_prediction is not None and ml_prediction.order_intent != "NONE":
+        setup_entry = ml_prediction.entry_price if ml_prediction.entry_price > 0 else last_price
+        setup_sl = ml_prediction.sl_price
+        setup_tp = ml_prediction.tp_price
+        setup_label = ml_prediction.order_intent
+
+    # Optional ML Regime + Probabilities HUD inside top-right plot corner
+    if ml_prediction is not None:
+        ml_badge = f"{ml_prediction.timeframe} | HMM {ml_prediction.regime} | L {ml_prediction.prob_long:.0%} / S {ml_prediction.prob_short:.0%}"
+        _draw_pill(draw, plot_l + 12, plot_t + 10, ml_badge, (15, 23, 42, 230), (125, 211, 252, 255), f_mono_bold, pad_x=10, pad_y=4)
 
     if setup_tp > 0:
         ty = y_of(setup_tp)
@@ -364,3 +391,6 @@ def render_analysis_chart(
     buf = io.BytesIO()
     img.convert("RGB").save(buf, format="PNG", optimize=True)
     return buf.getvalue()
+
+
+render_chart_card = render_analysis_chart

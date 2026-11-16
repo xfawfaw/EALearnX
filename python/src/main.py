@@ -10,6 +10,8 @@ from .bridge import Mt5Bridge
 from .config import PROJECT_ROOT, Settings
 from .data_feeds import MarketDataFeeds
 from .journal import TradeJournal
+from .ml_engine import MlSignalRunner
+from .mt5_feed import Mt5Feed
 from .telegram_bot import TelegramController
 
 
@@ -68,12 +70,20 @@ def main() -> None:
     )
 
     feeds = MarketDataFeeds(finnhub_api_key=settings.finnhub_api_key)
+    mt5_feed = Mt5Feed(symbol="XAUUSDm")
+    ml_runner = MlSignalRunner(
+        settings=settings,
+        mt5_feed=mt5_feed,
+        feeds=feeds,
+        bridge=bridge,
+    )
     analyst = GoldAnalyst(settings=settings, feeds=feeds, journal=journal)
     controller = TelegramController(
         settings=settings,
         bridge=bridge,
         analyst=analyst,
         journal=journal,
+        ml_runner=ml_runner,
     )
 
     app = controller.build_application()

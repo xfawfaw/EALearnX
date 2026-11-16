@@ -591,3 +591,13 @@ class GoldAnalyst:
             validation_note=validation_note,
             grounded_sources=sources,
         )
+
+    async def analyze_brief(
+        self,
+        market: MarketContext | None,
+        ea_state: EaState | None,
+    ) -> AnalysisReport:
+        """Read-only macro, news & SMC briefing; never authorizes live MT5 execution."""
+        report = await self.analyze(market=market, ea_state=ea_state, publish_allowed=False)
+        report.signal = report.signal.model_copy(update={"trade_allowed": False})
+        return report

@@ -8,6 +8,7 @@ import io
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import time as dt_time, timezone
 
 from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -24,7 +25,17 @@ from .bridge import Mt5Bridge
 from .chart_card import render_analysis_chart
 from .config import Settings
 from .journal import TradeJournal
-from .schemas import AnalysisReport, EaSignalPayload, EaState, ExecutionMode, MarketContext
+from .ml_engine import MlSignalRunner
+from .ml_trainer import load_bundle
+from .schemas import (
+    AnalysisReport,
+    EaSignalPayload,
+    EaState,
+    ExecutionMode,
+    MarketContext,
+    MlPrediction,
+    StrategyMode,
+)
 from .sessions import evaluate_session
 from .smc import build_smc_snapshot, format_smc_summary
 
@@ -36,6 +47,7 @@ class BotRuntimeState:
     """Mutable runtime state shared across Telegram handlers and scheduled jobs."""
 
     mode: ExecutionMode
+    strategy_mode: StrategyMode = "M15_PRECISION"
     pending_signals: dict[str, EaSignalPayload] = field(default_factory=dict)
     known_position_tickets: set[int] = field(default_factory=set)
     known_be_tickets: set[int] = field(default_factory=set)
@@ -44,6 +56,7 @@ class BotRuntimeState:
     trade_alerts_enabled: bool = True
     quota_alert_sent: bool = False
     last_report: AnalysisReport | None = None
+    last_ml_prediction: MlPrediction | None = None
 
 
 class TelegramController:
@@ -55,12 +68,24 @@ class TelegramController:
         bridge: Mt5Bridge,
         analyst: GoldAnalyst,
         journal: TradeJournal,
+        ml_runner: MlSignalRunner | None = None,
     ) -> None:
         self.settings = settings
         self.bridge = bridge
         self.analyst = analyst
         self.journal = journal
-        self.runtime = BotRuntimeState(mode=settings.default_execution_mode)
+        self.ml_runner = ml_runner
+        initial_mode: ExecutionMode = settings.default_execution_mode
+        if (
+            ml_runner is not None
+            and initial_mode == "auto"
+            and not ml_runner.is_mode_verified(settings.default_strategy_mode)
+        ):
+            initial_mode = "confirm"
+        self.runtime = BotRuntimeState(
+            mode=initial_mode,
+            strategy_mode=settings.default_strategy_mode,
+        )
 
     def _is_authorized(self, update: Update) -> bool:
         user = update.effective_user
@@ -150,10 +175,15 @@ class TelegramController:
                     break
         return sent_any
 
-    async def _safe_answer(self, query: CallbackQuery, text: str | None = None) -> None:
+    async def _safe_answer(
+        self,
+        query: CallbackQuery,
+        text: str | None = None,
+        show_alert: bool = False,
+    ) -> None:
         """Answer a Telegram callback query without letting transient timeouts abort the action."""
         try:
-            await query.answer(text)
+            await query.answer(text, show_alert=show_alert)
         except (TimedOut, NetworkError, BadRequest) as exc:
             logger.warning("Callback answer skipped (%s): %s", query.data, exc)
 
@@ -347,6 +377,17 @@ class TelegramController:
     def _format_menu_text(self) -> str:
         mode_map = {"auto": "🟢 AUTO", "confirm": "🟡 CONFIRM", "pause": "⏸ PAUSED"}
         mode_badge = mode_map.get(self.runtime.mode, self.runtime.mode.upper())
+        strat_label = (
+            "🎯 M15 Precision" if self.runtime.strategy_mode == "M15_PRECISION" else "⚡ M5 Intraday"
+        )
+        if self.ml_runner is not None:
+            ver_tag = (
+                "✅ Verified"
+                if self.ml_runner.is_mode_verified(self.runtime.strategy_mode)
+                else "⚠️ Unverified (Confirm-only)"
+            )
+        else:
+            ver_tag = "⚪ ML Offline"
         hours = "🎯 KillZone Only" if self.settings.require_killzone else "🌐 Flexible (24/5)"
         sess = evaluate_session()
         state = self.bridge.read_ea_state()
@@ -356,9 +397,10 @@ class TelegramController:
             age = int(time.time()) - state.updated_at_unix
             mt5_txt = "🟢 Live" if age <= 60 and not state.paused else ("⏸ Paused" if age <= 60 else "⚠️ MT5 Closed")
         return (
-            "🎛 <b>EA-LearningX Control Panel</b>  <i>(Exness XAUUSD)</i>\n"
+            "🎛 <b>EA-LearningX Control Panel</b>  <i>(Exness XAUUSD · Dual ML)</i>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            f"⚙️ <b>Mode:</b> {mode_badge}\n"
+            f"⚙️ <b>Execution:</b> {mode_badge}\n"
+            f"🤖 <b>Strategy:</b> {strat_label}  <i>({ver_tag})</i>\n"
             f"🕒 <b>Hours:</b> {hours}\n"
             f"🧭 <b>Market:</b> <code>{html.escape(sess.session_name)}</code>  ·  <b>MT5:</b> {mt5_txt}"
         )
@@ -366,6 +408,9 @@ class TelegramController:
     def _build_menu_keyboard(self) -> InlineKeyboardMarkup:
         def _mode_label(mode_val: ExecutionMode, label: str) -> str:
             return f"✅ {label}" if self.runtime.mode == mode_val else label
+
+        def _strat_label(strat_val: StrategyMode, label: str) -> str:
+            return f"✅ {label}" if self.runtime.strategy_mode == strat_val else label
 
         kz_label = "🎯 KillZone Only" if self.settings.require_killzone else "🌐 24/5 Flexible"
         alerts_label = "🔔 Alerts: ON" if self.runtime.trade_alerts_enabled else "🔕 Alerts: OFF"
@@ -376,8 +421,16 @@ class TelegramController:
                 InlineKeyboardButton(_mode_label("pause", "Stop"), callback_data="menu:mode:pause"),
             ],
             [
+                InlineKeyboardButton(_strat_label("M15_PRECISION", "🎯 M15 Precision"), callback_data="strategy:M15_PRECISION"),
+                InlineKeyboardButton(_strat_label("M5_INTRADAY", "⚡ M5 Intraday"), callback_data="strategy:M5_INTRADAY"),
+            ],
+            [
                 InlineKeyboardButton(kz_label, callback_data="menu:toggle_kz"),
                 InlineKeyboardButton("⚡ Analyze Now", callback_data="menu:analyze"),
+            ],
+            [
+                InlineKeyboardButton("🤖 ML Models", callback_data="menu:ml_models"),
+                InlineKeyboardButton("🔄 Retrain ML", callback_data="ml:retrain"),
             ],
             [
                 InlineKeyboardButton("📡 Status", callback_data="menu:status"),
@@ -388,6 +441,51 @@ class TelegramController:
                 InlineKeyboardButton("🛡 Move BE", callback_data="menu:be"),
                 InlineKeyboardButton(alerts_label, callback_data="menu:toggle_alerts"),
                 InlineKeyboardButton("🚨 Close All", callback_data="menu:close_all"),
+            ],
+        ])
+
+    def _format_ml_models_html(self) -> str:
+        lines = [
+            "🤖 <b>EA-LearningX Dual-Mode ML Status</b>",
+            "━━━━━━━━━━━━━━━━━━",
+            f"Active Strategy: <code>{self.runtime.strategy_mode}</code>",
+        ]
+        for mode_name in ("M15_PRECISION", "M5_INTRADAY"):
+            bundle = (
+                self.ml_runner.get_bundle(mode_name)  # type: ignore[arg-type]
+                if self.ml_runner is not None
+                else load_bundle(mode_name, self.settings.ml_models_dir)  # type: ignore[arg-type]
+            )
+            icon = "🎯" if mode_name == "M15_PRECISION" else "⚡"
+            if bundle is None:
+                lines.append(f"\n{icon} <b>{mode_name}:</b> ⚪ <i>Not trained yet</i>")
+                continue
+            m = bundle.metrics
+            ver_badge = "✅ VERIFIED LIVE" if m.verified_for_live else "⚠️ UNVERIFIED (Confirm-Only)"
+            lines.append(
+                f"\n{icon} <b>{mode_name}:</b> {ver_badge}\n"
+                f"   OOS Trades: <code>{m.oos_trades}</code> · WR: <code>{m.oos_win_rate * 100:.1f}%</code> · PF: <code>{m.oos_profit_factor:.2f}</code>\n"
+                f"   Net PnL: <code>${m.oos_net_pnl_usd:+.2f}</code> · Conf Th: <code>{m.chosen_threshold:.2f}</code>"
+            )
+            if m.fail_reason:
+                lines.append(f"   Gate Note: <i>{html.escape(m.fail_reason)}</i>")
+        if self.runtime.last_ml_prediction is not None:
+            p = self.runtime.last_ml_prediction
+            lines.append(
+                f"\n📡 <b>Last Bar Signal:</b> <code>{p.timeframe}</code> · HMM <code>{p.regime}</code> · "
+                f"<code>{p.order_intent}</code> (L={p.prob_long:.2f}, S={p.prob_short:.2f})"
+            )
+        return "\n".join(lines)
+
+    def _ml_models_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🎯 M15 Precision", callback_data="strategy:M15_PRECISION"),
+                InlineKeyboardButton("⚡ M5 Intraday", callback_data="strategy:M5_INTRADAY"),
+            ],
+            [
+                InlineKeyboardButton("🔄 Retrain Active ML", callback_data="ml:retrain"),
+                InlineKeyboardButton("🎛 Panel", callback_data="menu:panel"),
             ],
         ])
 
@@ -586,6 +684,18 @@ class TelegramController:
             return
 
         new_mode: ExecutionMode = args[0].lower()  # type: ignore[assignment]
+        if (
+            new_mode == "auto"
+            and self.ml_runner is not None
+            and not self.ml_runner.is_mode_verified(self.runtime.strategy_mode)
+        ):
+            self.runtime.mode = "confirm"
+            self.bridge.send_command("RESUME")
+            await update.message.reply_text(
+                f"⚠️ AUTO blocked: {self.runtime.strategy_mode} ML bundle is unverified (PF < 1.05 or trades < 20). Staying in CONFIRM."
+            )
+            return
+
         self.runtime.mode = new_mode
         if new_mode == "pause":
             self.bridge.send_command("PAUSE")
@@ -633,10 +743,15 @@ class TelegramController:
         market: MarketContext | None,
         header: str,
         pending_signal_id: str | None = None,
+        ml_prediction: MlPrediction | None = None,
     ) -> None:
         kb = self._analysis_keyboard(pending_signal_id=pending_signal_id)
         if market is not None and len(market.h1_bars) >= 5:
-            chart_png = render_analysis_chart(market=market, report=report)
+            chart_png = render_analysis_chart(
+                market=market,
+                report=report,
+                ml_prediction=ml_prediction,
+            )
             if chart_png is not None:
                 caption = self._format_analysis_caption(report, header)
                 sent_photo = await self._broadcast_photo(
@@ -651,6 +766,7 @@ class TelegramController:
         await self._broadcast(context, self._format_report(report, header), reply_markup=kb)
 
     async def _execute_analysis_cycle(self, context: ContextTypes.DEFAULT_TYPE, manual: bool) -> None:
+        """Read-only Gemini macro & SMC briefing cycle; never writes execution signals."""
         session = evaluate_session()
         if not manual:
             if not session.market_open or session.session_name in {"DAILY_ROLLOVER", "FRIDAY_LATE_GUARD"}:
@@ -662,60 +778,30 @@ class TelegramController:
 
         market = self.bridge.read_market_context()
         ea_state = self.bridge.read_ea_state()
-        is_auto = self.runtime.mode == "auto"
 
         try:
             report = await self.analyst.analyze(
                 market=market,
                 ea_state=ea_state,
-                publish_allowed=is_auto,
+                publish_allowed=False,
             )
             self.runtime.quota_alert_sent = False
         except Exception as exc:  # noqa: BLE001
             logger.exception("Analysis failed")
             if manual:
-                await self._broadcast(context, f"⚠️ <b>Analysis failed:</b> <code>{html.escape(str(exc)[:220])}</code>")
-            elif not self.runtime.quota_alert_sent:
-                self.runtime.quota_alert_sent = True
-                await self._broadcast(
-                    context,
-                    f"⚠️ <b>Scheduled AI Analysis Paused/Error:</b> <code>{html.escape(str(exc)[:220])}</code>\n"
-                    "<i>Note: M1 Trailing SAR inside MT5 EA keeps running independently.</i>",
-                )
+                await self._broadcast(context, f"⚠️ <b>Briefing failed:</b> <code>{html.escape(str(exc)[:220])}</code>")
             return
 
         self.runtime.last_report = report
         self.journal.record_analysis(report)
-        sig = report.signal
-
-        if self.runtime.mode == "pause":
-            sig_paused = sig.model_copy(update={"trade_allowed": False})
-            self.bridge.write_signal(sig_paused)
-            if manual:
-                await self._send_analysis_card(context, report, market, "⏸ PAUSED MODE · NO EXECUTION")
-            return
-
-        if is_auto:
-            self.bridge.write_signal(sig)
-            if manual or sig.trade_allowed:
-                header = "⚡ AUTO SIGNAL SENT TO MT5" if sig.trade_allowed else "🤖 AUTO ANALYSIS · NO TRADE"
-                await self._send_analysis_card(context, report, market, header)
-            return
-
-        if sig.order_intent != "NONE" and report.validation_note.startswith("Validated setup"):
-            self.bridge.write_signal(sig.model_copy(update={"trade_allowed": False}))
-            self.runtime.pending_signals[sig.signal_id] = sig.model_copy(update={"trade_allowed": True})
-            await self._send_analysis_card(
-                context,
-                report,
-                market,
-                f"🟡 APPROVAL REQUIRED · id={sig.signal_id}",
-                pending_signal_id=sig.signal_id,
-            )
-        else:
-            self.bridge.write_signal(sig)
-            if manual:
-                await self._send_analysis_card(context, report, market, "🟡 CONFIRM MODE · NO TRADE")
+        ml_pred = self.runtime.last_ml_prediction
+        await self._send_analysis_card(
+            context,
+            report,
+            market,
+            "📰 GEMINI MACRO BRIEF · READ-ONLY",
+            ml_prediction=ml_pred,
+        )
 
     async def _run_manual_analysis(self, context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
@@ -750,6 +836,24 @@ class TelegramController:
 
         if data.startswith("menu:mode:"):
             new_mode: ExecutionMode = data.split(":", 2)[2]  # type: ignore[assignment]
+            if (
+                new_mode == "auto"
+                and self.ml_runner is not None
+                and not self.ml_runner.is_mode_verified(self.runtime.strategy_mode)
+            ):
+                if self.runtime.mode == "auto":
+                    self.runtime.mode = "confirm"
+                if self.runtime.mode != "pause":
+                    self.bridge.send_command("RESUME")
+                await self._safe_answer(query, "AUTO blocked: ML model unverified", show_alert=True)
+                if query.message is not None:
+                    await query.message.reply_text(
+                        f"⚠️ <b>Cannot enable AUTO:</b> <code>{self.runtime.strategy_mode}</code> ML bundle is unverified "
+                        "(PF &lt; 1.05 or OOS trades &lt; 20). Staying in <b>CONFIRM/PAUSE</b> — tap 🔄 <b>Retrain ML</b> first.",
+                        parse_mode=ParseMode.HTML,
+                    )
+                return
+
             already_selected = self.runtime.mode == new_mode
             self.runtime.mode = new_mode
             ea_cmd = "PAUSE" if new_mode == "pause" else "RESUME"
@@ -764,6 +868,36 @@ class TelegramController:
                 query,
                 unchanged_notice=f"✅ Mode is already <b>{new_mode.upper()}</b> (<code>{ea_cmd}</code> sent to MT5).",
             )
+            return
+
+        if data.startswith("strategy:"):
+            raw_strat = data.split(":", 1)[1]
+            if raw_strat not in {"M15_PRECISION", "M5_INTRADAY"}:
+                await self._safe_answer(query, "Unknown strategy mode")
+                return
+            new_strat: StrategyMode = raw_strat  # type: ignore[assignment]
+            already_selected = self.runtime.strategy_mode == new_strat
+            self.runtime.strategy_mode = new_strat
+            downgraded = False
+            if (
+                self.runtime.mode == "auto"
+                and self.ml_runner is not None
+                and not self.ml_runner.is_mode_verified(new_strat)
+            ):
+                self.runtime.mode = "confirm"
+                downgraded = True
+            toast = (
+                f"Already on {new_strat}"
+                if already_selected
+                else f"Strategy set to {new_strat}"
+            )
+            await self._safe_answer(query, toast)
+            notice = f"🤖 Strategy switched to <b>{new_strat}</b>."
+            if downgraded:
+                notice += " ⚠️ <i>Unverified bundle — downgraded execution to CONFIRM.</i>"
+            await self._edit_menu_safely(query, unchanged_notice=notice)
+            if downgraded and query.message is not None:
+                await query.message.reply_text(notice, parse_mode=ParseMode.HTML)
             return
 
         if data == "menu:toggle_kz":
@@ -848,6 +982,13 @@ class TelegramController:
                     parse_mode=ParseMode.HTML,
                 )
                 return
+            if action == "ml_models":
+                await query.message.reply_text(
+                    self._format_ml_models_html(),
+                    reply_markup=self._ml_models_keyboard(),
+                    parse_mode=ParseMode.HTML,
+                )
+                return
             if action == "analyze":
                 progress_msg = None
                 try:
@@ -921,6 +1062,41 @@ class TelegramController:
             await query.message.reply_text(msg, reply_markup=self._status_keyboard(self.bridge.read_ea_state()), parse_mode=ParseMode.HTML)
             return
 
+        if data == "ml:retrain":
+            assert query.message is not None
+            if self.ml_runner is None:
+                await query.message.reply_text("⚠️ ML runner is not configured.")
+                return
+            strat = self.runtime.strategy_mode
+            await query.message.reply_text(
+                f"🔄 <i>Retraining &amp; walk-forward validating <b>{strat}</b>...</i>",
+                parse_mode=ParseMode.HTML,
+            )
+            try:
+                bundle = await self.ml_runner.retrain_mode(strat)
+                m = bundle.metrics
+                status_line = (
+                    "✅ <b>PASSED OOS GATE — Live model updated</b>"
+                    if m.verified_for_live
+                    else f"⚠️ <b>FAILED OOS GATE — Auto blocked / Prior bundle kept</b> (<i>{html.escape(m.fail_reason)}</i>)"
+                )
+                await self._broadcast(
+                    context,
+                    f"🤖 <b>ML Retrain Complete ({strat})</b>\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    f"{status_line}\n"
+                    f"📊 OOS Trades: <code>{m.oos_trades}</code> · WR: <code>{m.oos_win_rate * 100:.1f}%</code> · PF: <code>{m.oos_profit_factor:.2f}</code>\n"
+                    f"💰 OOS Net PnL: <code>${m.oos_net_pnl_usd:+.2f}</code> · Conf Th: <code>{m.chosen_threshold:.2f}</code>",
+                    reply_markup=self._ml_models_keyboard(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Manual ML retrain failed")
+                await self._broadcast(
+                    context,
+                    f"⚠️ <b>ML Retrain failed ({strat}):</b> <code>{html.escape(str(exc)[:220])}</code>",
+                )
+            return
+
         if data.startswith("reject:"):
             sig_id = data.split(":", 1)[1]
             self.runtime.pending_signals.pop(sig_id, None)
@@ -930,10 +1106,77 @@ class TelegramController:
                 parse_mode=ParseMode.HTML,
             )
 
-    async def scheduled_analysis_job(self, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if self.runtime.mode == "pause":
+    async def scheduled_ml_cycle_job(self, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Poll closed M15/M5 bars every 15s and execute/queue ML signals on bar close."""
+        if self.ml_runner is None or self.runtime.mode == "pause":
             return
-        await self._execute_analysis_cycle(context, manual=False)
+        try:
+            pred, sig, is_new_bar = await self.ml_runner.step_live_cycle(
+                self.runtime.strategy_mode,
+                self.runtime.mode,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ML live cycle skipped/error: %s", exc)
+            return
+
+        if pred is not None:
+            self.runtime.last_ml_prediction = pred
+
+        if not is_new_bar or sig is None or pred is None:
+            return
+
+        market = self.bridge.read_market_context()
+        if sig.trade_allowed:
+            msg = (
+                f"🤖 <b>ML AUTO SIGNAL SENT ({pred.mode})</b>\n"
+                f"📊 <code>{pred.timeframe}</code> · HMM <code>{pred.regime}</code> · <b>{sig.order_intent}</b>\n"
+                f"🎯 Entry <code>{pred.entry_price:.2f}</code> · 🛑 SL <code>{sig.sl_price:.2f}</code> · 🏆 TP <code>{sig.tp_price:.2f}</code>\n"
+                f"📈 Prob L=<code>{pred.prob_long:.2f}</code> / S=<code>{pred.prob_short:.2f}</code> (th <code>{pred.threshold:.2f}</code>)"
+            )
+            chart_png = render_analysis_chart(market=market, ml_prediction=pred) if market is not None else None
+            if chart_png is not None:
+                await self._broadcast_photo(context, chart_png, msg, reply_markup=self._status_keyboard())
+            else:
+                await self._broadcast(context, msg, reply_markup=self._status_keyboard())
+        elif self.runtime.mode == "confirm" and pred.order_intent != "NONE":
+            confirmed_sig = sig.model_copy(
+                update={
+                    "trade_allowed": True,
+                    "max_hold_until_unix": pred.max_hold_until_unix,
+                }
+            )
+            self.runtime.pending_signals[sig.signal_id] = confirmed_sig
+            kb = self._analysis_keyboard(pending_signal_id=sig.signal_id)
+            msg = (
+                f"🟡 <b>ML APPROVAL REQUIRED ({pred.mode})</b> · <code>{sig.signal_id}</code>\n"
+                f"📊 <code>{pred.timeframe}</code> · HMM <code>{pred.regime}</code> · <b>{pred.order_intent}</b>\n"
+                f"🎯 Entry <code>{pred.entry_price:.2f}</code> · 🛑 SL <code>{pred.sl_price:.2f}</code> · 🏆 TP <code>{pred.tp_price:.2f}</code>\n"
+                f"📈 Prob L=<code>{pred.prob_long:.2f}</code> / S=<code>{pred.prob_short:.2f}</code>"
+            )
+            chart_png = render_analysis_chart(market=market, ml_prediction=pred) if market is not None else None
+            if chart_png is not None:
+                await self._broadcast_photo(context, chart_png, msg, reply_markup=kb)
+            else:
+                await self._broadcast(context, msg, reply_markup=kb)
+
+    async def scheduled_ml_retrain_job(self, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Daily walk-forward retrain across both strategy modes at rollover hour."""
+        if self.ml_runner is None:
+            return
+        for strat in ("M15_PRECISION", "M5_INTRADAY"):
+            try:
+                bundle = await self.ml_runner.retrain_mode(strat)  # type: ignore[arg-type]
+                m = bundle.metrics
+                if not m.verified_for_live:
+                    if self.runtime.strategy_mode == strat and self.runtime.mode == "auto" and not self.ml_runner.is_mode_verified(strat):  # type: ignore[arg-type]
+                        self.runtime.mode = "confirm"
+                    await self._broadcast(
+                        context,
+                        f"⚠️ <b>Nightly Retrain Failed ({strat}):</b> {html.escape(m.fail_reason)} "
+                        f"(PF={m.oos_profit_factor:.2f}, trades={m.oos_trades}).",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Nightly retrain error for %s: %s", strat, exc)
 
     async def watch_ea_state_job(self, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Detect trade opens, Break-Even activations, and closes from ea_state.json."""
@@ -1034,13 +1277,17 @@ class TelegramController:
 
         if app.job_queue is not None:
             app.job_queue.run_repeating(
-                self.scheduled_analysis_job,
-                interval=self.settings.analysis_interval_minutes * 60,
-                first=20,
+                self.scheduled_ml_cycle_job,
+                interval=self.settings.ml_poll_interval_seconds,
+                first=5,
             )
             app.job_queue.run_repeating(
                 self.watch_ea_state_job,
                 interval=10,
                 first=5,
+            )
+            app.job_queue.run_daily(
+                self.scheduled_ml_retrain_job,
+                time=dt_time(hour=self.settings.ml_retrain_hour_utc, minute=0, tzinfo=timezone.utc),
             )
         return app

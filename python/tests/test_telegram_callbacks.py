@@ -284,4 +284,108 @@ def test_hold_and_unhold_position_buttons_send_ticket_commands(tmp_path: Path) -
     assert '5056757525' in cmd_raw
 
 
+def _sample_ml_prediction(mode: str = "M15_PRECISION", verified: bool = True):
+    from python.src.schemas import MlPrediction
+
+    return MlPrediction(
+        mode=mode,  # type: ignore[arg-type]
+        bar_time_unix=1760100000,
+        timeframe="M15" if mode == "M15_PRECISION" else "M5",
+        regime="TRENDING",
+        regime_probs={"TRENDING": 0.81, "RANGING": 0.14, "VOLATILE": 0.05},
+        prob_long=0.69,
+        prob_short=0.21,
+        threshold=0.55,
+        order_intent="MARKET_BUY",
+        confidence=69,
+        entry_price=3883.44,
+        sl_price=3876.00,
+        tp_price=3895.30,
+        max_hold_until_unix=1760114400,
+        reason="TRENDING | P(L)=0.69/P(S)=0.21",
+        verified_for_live=verified,
+    )
+
+
+def test_strategy_mode_switch_and_unverified_auto_block(tmp_path: Path) -> None:
+    settings = Settings(
+        gemini_api_key="test",
+        telegram_bot_token="123:test",
+        telegram_allowed_user_ids=[5462088246],
+        mt5_files_dir=tmp_path,
+        default_execution_mode="confirm",
+    )
+    bridge = Mt5Bridge(tmp_path)
+    journal = TradeJournal(tmp_path / "journal.db")
+    analyst = MagicMock()
+    ml_runner = MagicMock()
+    ml_runner.is_mode_verified = MagicMock(return_value=False)
+    ml_runner.get_bundle = MagicMock(return_value=None)
+
+    ctrl = TelegramController(
+        settings=settings,
+        bridge=bridge,
+        analyst=analyst,
+        journal=journal,
+        ml_runner=ml_runner,
+    )
+    assert ctrl.runtime.strategy_mode == "M15_PRECISION"
+
+    def _run_cb(cb_data: str):
+        reply_text = AsyncMock()
+        q = SimpleNamespace(
+            data=cb_data,
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(side_effect=BadRequest("Message is not modified")),
+            message=SimpleNamespace(reply_text=reply_text),
+        )
+        upd = SimpleNamespace(
+            effective_user=SimpleNamespace(id=5462088246),
+            callback_query=q,
+            message=None,
+        )
+        ctx = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+        asyncio.run(ctrl.handle_callback(upd, ctx))  # type: ignore[arg-type]
+        return q, reply_text
+
+    # Switch strategy M15 -> M5 -> M15
+    _run_cb("strategy:M5_INTRADAY")
+    assert ctrl.runtime.strategy_mode == "M5_INTRADAY"
+    _run_cb("strategy:M15_PRECISION")
+    assert ctrl.runtime.strategy_mode == "M15_PRECISION"
+
+    # Attempt menu:mode:auto when M15_PRECISION is unverified -> blocked!
+    q_auto, reply_auto = _run_cb("menu:mode:auto")
+    assert ctrl.runtime.mode != "auto"
+    reply_auto.assert_awaited()
+    assert "unverified" in reply_auto.call_args.args[0].lower() or "pf" in reply_auto.call_args.args[0].lower()
+
+
+def test_analyze_now_is_strictly_read_only_and_never_writes_signal(tmp_path: Path) -> None:
+    ctrl = _make_controller(tmp_path, default_mode="auto")
+    market, report = _sample_market_and_report()
+    ctrl.analyst.analyze = AsyncMock(return_value=report)
+    ctrl.bridge.read_market_context = MagicMock(return_value=market)
+    ctrl.bridge.read_ea_state = MagicMock(return_value=None)
+    ctrl.bridge.write_signal = MagicMock()
+
+    context = SimpleNamespace(bot=SimpleNamespace(send_photo=AsyncMock(), send_message=AsyncMock()))
+    asyncio.run(ctrl._execute_analysis_cycle(context, manual=True))  # type: ignore[arg-type]
+
+    ctrl.analyst.analyze.assert_awaited_once()
+    ctrl.bridge.write_signal.assert_not_called()
+
+
+def test_chart_card_renders_with_ml_prediction_pills() -> None:
+    from python.src.chart_card import render_chart_card
+
+    market, report = _sample_market_and_report()
+    pred = _sample_ml_prediction()
+    png = render_chart_card(market=market, report=report, ml_prediction=pred)
+    assert png is not None
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert len(png) > 5000
+
+
+
 
