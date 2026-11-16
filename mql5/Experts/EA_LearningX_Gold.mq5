@@ -30,18 +30,18 @@ input group "=== M1 Trailing Stop-and-Reverse (SAR) Engine ==="
 input bool          InpUseSarEngine       = true;             // Enable fast M1 Trailing Stop-and-Reverse
 input ENUM_LOT_MODE InpLotMode            = LOT_DYNAMIC_RISK; // Lot Sizing Mode
 input double        InpFixedLot           = 0.05;             // Starter Fixed Lot (used when LOT_FIXED)
-input double        InpSAR_MinTrailUSD    = 0.85;             // Min Smart SAR trail distance (USD)
-input double        InpSAR_MaxTrailUSD    = 1.50;             // Max Smart SAR trail distance (USD)
-input double        InpSAR_TrailStepUSD   = 0.10;             // Pending Stop ratchet step (USD)
-input double        InpSAR_SpreadMult     = 3.0;              // Min trail multiple of spread
-input double        InpSAR_HardSL_USD     = 12.00;            // Emergency Hard Gap-SL (USD, 0=off)
-input int           InpSAR_FlipCooldownSec= 2;                // Cooldown between flip actions (sec)
+input double        InpSAR_MinTrailUSD    = 0.35;             // Min Ultra-Tight SAR trail distance (USD)
+input double        InpSAR_MaxTrailUSD    = 0.55;             // Max Ultra-Tight SAR trail distance (USD)
+input double        InpSAR_TrailStepUSD   = 0.03;             // Pending Stop ratchet step (USD)
+input double        InpSAR_SpreadMult     = 1.35;             // Min trail multiple of spread
+input double        InpSAR_HardSL_USD     = 0.0;              // Emergency Hard Gap-SL (USD, 0=pure SAR only)
+input int           InpSAR_FlipCooldownSec= 1;                // Cooldown between flip actions (sec)
 
 input group "=== Risk & Exness Safety ==="
 input double InpRiskPercent         = 0.5;           // Risk per trade (% of equity)
 input double InpMaxLotSize          = 0.50;          // Hard max lot cap
 input double InpMaxSpreadUSD        = 0.60;          // Max allowed spread in USD (e.g. 0.60 = 60 cents)
-input double InpMaxDailyLossPct     = 3.0;           // Daily max loss halt (% of day start equity)
+input double InpMaxDailyLossPct     = 20.0;          // Daily max loss halt (% of day start equity)
 input int    InpMaxOpenPositions    = 2;             // Max concurrent positions (legacy AI limit mode)
 input int    InpMaxPendingOrders    = 2;             // Max concurrent pending orders (legacy AI limit mode)
 input bool   InpCloseOnOppositeBias = false;         // Close open trade if AI reverses strongly
@@ -418,7 +418,14 @@ void ProcessCommands()
    else if(action == "PAUSE")
       g_paused_by_user = true;
    else if(action == "RESUME")
+     {
       g_paused_by_user = false;
+      if(g_daily_halt)
+        {
+         g_daily_halt = false;
+         g_daily_start_eq = AccountInfoDouble(ACCOUNT_EQUITY);
+        }
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -972,7 +979,7 @@ void ManageSarEngine()
       double target_stop = (pos_type == POSITION_TYPE_BUY)
                            ? NormPrice(bid - sar_dist)
                            : NormPrice(ask + sar_dist);
-      double min_gap = MathMax(stops_dist + 0.05, spread + 0.05);
+      double min_gap = MathMax(stops_dist + 0.03, 0.05);
       double opp_sl  = 0.0;
       if(InpSAR_HardSL_USD > 0.0)
          opp_sl = (desired_stop_type == ORDER_TYPE_SELL_STOP)
