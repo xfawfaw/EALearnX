@@ -277,7 +277,35 @@ def test_runner_blocks_when_unheld_position_open_or_spread_wide(tmp_path):
     assert sig_unheld.trade_allowed is False
     assert "unheld position" in sig_unheld.reason.lower()
 
-    # 2. Held-only position allows new ML trade (if spread <= 0.60)
+    # 2. Risk-free unheld position #1 (be_applied=True after TP1) allows Trade #2
+    state_be = state_unheld.model_copy(
+        update={
+            "positions": [
+                state_unheld.positions[0].model_copy(
+                    update={"be_applied": True, "sl": 3849.30, "volume": 0.01}
+                )
+            ]
+        }
+    )
+    bridge._atomic_write_json(bridge.state_path, json.loads(state_be.model_dump_json()))
+    r2_be = MlSignalRunner(settings, _WideOrNormalFeed(m15_df, m5_df, 0.24), _FakeDataFeeds(), bridge)
+    r2_be.predict_mode = MagicMock(return_value=(fake_pred, m15_df))
+    _, sig_be, _ = asyncio.run(r2_be.step_live_cycle("M15_PRECISION", "auto", now_utc=now_kill))
+    assert sig_be is not None
+    assert sig_be.trade_allowed is True
+
+    # 2b. 2 unheld positions (even if both BE-locked) blocks Trade #3 (max 2 unheld)
+    pos_be_2 = state_be.positions[0].model_copy(update={"ticket": 9002})
+    state_two = state_be.model_copy(update={"positions": [state_be.positions[0], pos_be_2]})
+    bridge._atomic_write_json(bridge.state_path, json.loads(state_two.model_dump_json()))
+    r2_two = MlSignalRunner(settings, _WideOrNormalFeed(m15_df, m5_df, 0.24), _FakeDataFeeds(), bridge)
+    r2_two.predict_mode = MagicMock(return_value=(fake_pred, m15_df))
+    _, sig_two, _ = asyncio.run(r2_two.step_live_cycle("M15_PRECISION", "auto", now_utc=now_kill))
+    assert sig_two is not None
+    assert sig_two.trade_allowed is False
+    assert "max 2 unheld" in sig_two.reason.lower()
+
+    # 2c. Held-only position allows new ML trade (if spread <= 0.60)
     state_held = state_unheld.model_copy(
         update={"positions": [state_unheld.positions[0].model_copy(update={"held": True})]}
     )
@@ -298,15 +326,15 @@ def test_runner_blocks_when_unheld_position_open_or_spread_wide(tmp_path):
     assert sig_wide.trade_allowed is False
     assert "spread" in sig_wide.reason.lower()
 
-    # 4. Extreme VOLATILE SL distance (> ml_max_sl_usd = $10) blocks execution
+    # 4. Extreme VOLATILE SL distance (> ml_max_sl_usd = $15) blocks execution
     wide_sl_pred = fake_pred.model_copy(
         update={
             "order_intent": "MARKET_SELL",
             "entry_price": 3583.81,
-            "sl_price": 3596.31,  # $12.50 SL > $10.00 cap
-            "tp1_price": 3571.31,
-            "tp_price": 3542.14,
-            "trail_atr_usd": 12.50,
+            "sl_price": 3602.31,  # $18.50 SL > $15.00 cap
+            "tp1_price": 3565.31,
+            "tp_price": 3522.14,
+            "trail_atr_usd": 18.50,
         }
     )
     r4 = MlSignalRunner(settings, _WideOrNormalFeed(m15_df, m5_df, 0.20), _FakeDataFeeds(), bridge)

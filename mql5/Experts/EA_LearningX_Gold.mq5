@@ -47,7 +47,7 @@ input double InpRiskPercent         = 0.5;           // Risk per trade (% of equ
 input double InpMaxLotSize          = 0.50;          // Hard max lot cap
 input double InpMaxSpreadUSD        = 0.60;          // Max allowed spread in USD (e.g. 0.60 = 60 cents)
 input double InpMaxDailyLossPct     = 20.0;          // Daily max loss halt (% of day start equity)
-input int    InpMaxOpenPositions    = 1;             // Max concurrent unheld positions (1 for ML parity)
+input int    InpMaxOpenPositions    = 2;             // Max concurrent unheld positions (Trade #2 only after #1 is BE-locked)
 input int    InpMaxPendingOrders    = 2;             // Max concurrent pending orders (legacy AI limit mode)
 input bool   InpCloseOnOppositeBias = false;         // Close open trade if AI reverses strongly
 
@@ -702,6 +702,17 @@ void SetLastExecutedSigTs(const long gen_at_unix)
    GlobalVariableSet(LastSigTsKey(), (double)gen_at_unix);
   }
 
+bool IsPositionBreakEvenLocked(const ENUM_POSITION_TYPE pos_type, const double open_p, const double cur_sl)
+  {
+   if(cur_sl <= 0.0)
+      return false;
+   if(pos_type == POSITION_TYPE_BUY)
+      return (cur_sl >= open_p);
+   if(pos_type == POSITION_TYPE_SELL)
+      return (cur_sl <= open_p);
+   return false;
+  }
+
 int CountUnheldOpenPositions()
   {
    int count = 0;
@@ -710,6 +721,21 @@ int CountUnheldOpenPositions()
       if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber)
         {
          if(!IsHeldPosition(g_pos.Ticket(), g_pos.Comment()))
+            count++;
+        }
+     }
+   return count;
+  }
+
+int CountAtRiskUnheldPositions()
+  {
+   int count = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber)
+        {
+         if(!IsHeldPosition(g_pos.Ticket(), g_pos.Comment()) &&
+            !IsPositionBreakEvenLocked(g_pos.PositionType(), g_pos.PriceOpen(), g_pos.StopLoss()))
             count++;
         }
      }
@@ -934,6 +960,11 @@ void ProcessAiSignal()
          Print("[EA-LearningX] Max open unheld positions reached.");
          return;
         }
+      if(CountAtRiskUnheldPositions() > 0)
+        {
+         Print("[EA-LearningX] Existing unheld position still at risk (pre-BE); Trade #2 blocked.");
+         return;
+        }
       if(HasOpenPositionWithComment(comment))
         {
          PrintFormat("[EA-LearningX] Duplicate signal guard: position with comment %s already open.", comment);
@@ -1134,9 +1165,7 @@ void ExportEaState()
       first_pos = false;
 
       string ptype = (g_pos.PositionType() == POSITION_TYPE_BUY) ? "BUY" : "SELL";
-      bool be_done = (g_pos.PositionType() == POSITION_TYPE_BUY)
-                     ? (g_pos.StopLoss() >= g_pos.PriceOpen() && g_pos.StopLoss() > 0.0)
-                     : (g_pos.StopLoss() > 0.0 && g_pos.StopLoss() <= g_pos.PriceOpen());
+      bool be_done = IsPositionBreakEvenLocked(g_pos.PositionType(), g_pos.PriceOpen(), g_pos.StopLoss());
 
       bool is_held = IsHeldPosition(g_pos.Ticket(), g_pos.Comment());
       pos_json += StringFormat(

@@ -74,4 +74,4 @@ def test_ml_models_and_settings_defaults(tmp_path):
     assert s.ml_m5_bars == 12000
     assert s.ml_poll_interval_seconds == 15
     assert s.ml_retrain_hour_utc == 22
-    assert s.ml_max_sl_usd == 10.0
+    assert s.ml_max_sl_usd == 15.0

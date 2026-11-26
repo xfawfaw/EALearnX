@@ -231,8 +231,13 @@ class MlSignalRunner:
         ea_state = self.bridge.read_ea_state()
         if ea_state is not None:
             unheld = [p for p in ea_state.positions if not p.held]
-            if unheld:
-                blockers.append(f"Active unheld position #{unheld[0].ticket} running")
+            at_risk = [p for p in unheld if not p.be_applied]
+            if at_risk:
+                blockers.append(
+                    f"Active unheld position #{at_risk[0].ticket} still at risk (pre-BE)"
+                )
+            elif len(unheld) >= 2:
+                blockers.append(f"Max 2 unheld positions running ({len(unheld)} active)")
 
         _, _, spread_usd = self.mt5_feed.fetch_tick_spread()
         if spread_usd > 0.60:
