@@ -130,19 +130,29 @@ class MlSignalRunner:
         if order_intent == "MARKET_BUY":
             entry_price = ask if ask > 0.0 else close_px
             sl_price = round(entry_price - spec.sl_atr * atr, 2)
-            tp_price = round(entry_price + spec.tp_atr * atr, 2)
+            tp1_price = round(entry_price + spec.tp1_atr * atr, 2)
+            tp_price = round(entry_price + spec.tp2_atr * atr, 2)
+            trail_atr_usd = round(spec.trail_atr * atr, 2)
         elif order_intent == "MARKET_SELL":
             entry_price = bid if bid > 0.0 else close_px
             sl_price = round(entry_price + spec.sl_atr * atr, 2)
-            tp_price = round(entry_price - spec.tp_atr * atr, 2)
+            tp1_price = round(entry_price - spec.tp1_atr * atr, 2)
+            tp_price = round(entry_price - spec.tp2_atr * atr, 2)
+            trail_atr_usd = round(spec.trail_atr * atr, 2)
         else:
             entry_price = round((bid + ask) / 2.0, 2) if (bid > 0.0 and ask > 0.0) else round(close_px, 2)
             sl_price = 0.0
+            tp1_price = 0.0
             tp_price = 0.0
+            trail_atr_usd = 0.0
 
         now_dt = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
         now_unix = int(now_dt.timestamp())
-        max_hold_until = (now_unix + spec.horizon_bars * spec.bar_seconds) if order_intent != "NONE" else 0
+        max_hold_until = (
+            (now_unix + spec.runner_horizon_bars * spec.bar_seconds)
+            if order_intent != "NONE"
+            else 0
+        )
         bar_time_unix = int(features_df["t"].iloc[-1])
         confidence = int(round(max(prob_long, prob_short) * 100))
 
@@ -167,6 +177,8 @@ class MlSignalRunner:
             entry_price=round(entry_price, 2),
             sl_price=sl_price,
             tp_price=tp_price,
+            tp1_price=tp1_price,
+            trail_atr_usd=trail_atr_usd,
             max_hold_until_unix=max_hold_until,
             reason=" | ".join(reason_parts),
             verified_for_live=bool(bundle.metrics.verified_for_live),
@@ -262,6 +274,8 @@ class MlSignalRunner:
             limit_price=pred.entry_price if pred.order_intent != "NONE" else 0.0,
             sl_price=pred.sl_price,
             tp_price=pred.tp_price,
+            tp1_price=pred.tp1_price,
+            trail_atr_usd=pred.trail_atr_usd,
             confidence=round(max(pred.prob_long, pred.prob_short), 3),
             blackout_until_unix=blackout_until,
             max_hold_until_unix=pred.max_hold_until_unix if trade_allowed else 0,
@@ -287,7 +301,7 @@ class MlSignalRunner:
         now_dt = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
         now_unix = int(now_dt.timestamp())
         bias: Bias = "BULLISH" if pred.order_intent == "MARKET_BUY" else "BEARISH"
-        max_hold = pred.max_hold_until_unix or (now_unix + spec.horizon_bars * spec.bar_seconds)
+        max_hold = pred.max_hold_until_unix or (now_unix + spec.runner_horizon_bars * spec.bar_seconds)
 
         payload = EaSignalPayload(
             signal_id=f"ml_cfg_{pred.mode.lower()}_{uuid.uuid4().hex[:8]}",
@@ -299,6 +313,8 @@ class MlSignalRunner:
             limit_price=pred.entry_price,
             sl_price=pred.sl_price,
             tp_price=pred.tp_price,
+            tp1_price=pred.tp1_price,
+            trail_atr_usd=pred.trail_atr_usd,
             confidence=round(max(pred.prob_long, pred.prob_short), 3),
             blackout_until_unix=0,
             max_hold_until_unix=max_hold,

@@ -491,7 +491,7 @@ class TelegramController:
             lines.append(
                 f"\n{icon} <b>{mode_name}:</b> {ver_badge}\n"
                 f"   OOS Trades: <code>{m.oos_trades}</code> · WR: <code>{m.oos_win_rate * 100:.1f}%</code> · PF: <code>{m.oos_profit_factor:.2f}</code>\n"
-                f"   Net PnL: <code>${m.oos_net_pnl_usd:+.2f} USD (@0.01 lot)</code> · Conf Th: <code>{m.chosen_threshold:.2f}</code>"
+                f"   Net PnL: <code>${m.oos_net_pnl_usd:+.2f} USD (@0.02 split)</code> · Conf Th: <code>{m.chosen_threshold:.2f}</code>"
             )
             if m.fail_reason:
                 lines.append(f"   Gate Note: <i>{html.escape(m.fail_reason)}</i>")
@@ -1162,10 +1162,12 @@ class TelegramController:
         self.journal.record_ml_signal(pred, sig, evaluate_session().session_name)
         market = self.bridge.read_market_context()
         if sig.trade_allowed:
+            tp1_str = f" · 🥉 TP1 <code>{sig.tp1_price:.2f}</code>" if sig.tp1_price > 0 else ""
+            trl_str = f" · 🏃 Trail <code>${sig.trail_atr_usd:.2f}</code>" if sig.trail_atr_usd > 0 else ""
             msg = (
                 f"🤖 <b>ML AUTO SIGNAL SENT ({pred.mode})</b>\n"
                 f"📊 <code>{pred.timeframe}</code> · HMM <code>{pred.regime}</code> · <b>{sig.order_intent}</b>\n"
-                f"🎯 Entry <code>{pred.entry_price:.2f}</code> · 🛑 SL <code>{sig.sl_price:.2f}</code> · 🏆 TP <code>{sig.tp_price:.2f}</code>\n"
+                f"🎯 Entry <code>{pred.entry_price:.2f}</code> · 🛑 SL <code>{sig.sl_price:.2f}</code>{tp1_str} · 🏆 TP2 <code>{sig.tp_price:.2f}</code>{trl_str}\n"
                 f"📈 Prob L=<code>{pred.prob_long:.2f}</code> / S=<code>{pred.prob_short:.2f}</code> (th <code>{pred.threshold:.2f}</code>)"
             )
             chart_png = render_analysis_chart(market=market, ml_prediction=pred) if market is not None else None
@@ -1182,10 +1184,11 @@ class TelegramController:
             )
             self.runtime.pending_signals[sig.signal_id] = confirmed_sig
             kb = self._analysis_keyboard(pending_signal_id=sig.signal_id)
+            tp1_str = f" · 🥉 TP1 <code>{pred.tp1_price:.2f}</code>" if pred.tp1_price > 0 else ""
             msg = (
                 f"🟡 <b>ML APPROVAL REQUIRED ({pred.mode})</b> · <code>{sig.signal_id}</code>\n"
                 f"📊 <code>{pred.timeframe}</code> · HMM <code>{pred.regime}</code> · <b>{pred.order_intent}</b>\n"
-                f"🎯 Entry <code>{pred.entry_price:.2f}</code> · 🛑 SL <code>{pred.sl_price:.2f}</code> · 🏆 TP <code>{pred.tp_price:.2f}</code>\n"
+                f"🎯 Entry <code>{pred.entry_price:.2f}</code> · 🛑 SL <code>{pred.sl_price:.2f}</code>{tp1_str} · 🏆 TP2 <code>{pred.tp_price:.2f}</code>\n"
                 f"📈 Prob L=<code>{pred.prob_long:.2f}</code> / S=<code>{pred.prob_short:.2f}</code>"
             )
             chart_png = render_analysis_chart(market=market, ml_prediction=pred) if market is not None else None

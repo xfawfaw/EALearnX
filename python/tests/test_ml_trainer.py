@@ -7,6 +7,7 @@ pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 from python.src.ml_trainer import (
     MODE_SPECS,
     CalibratedModelWrapper,
+    compute_split_tp_outcomes,
     compute_triple_barrier_outcomes,
     load_bundle,
     search_best_threshold,
@@ -47,6 +48,11 @@ def test_mode_specs_constants():
     assert m15.horizon_bars == 16
     assert m15.bar_seconds == 900
     assert m15.timeframe == "M15"
+    assert m15.tp1_atr == 1.5
+    assert m15.tp2_atr == 5.0
+    assert m15.trail_atr == 1.5
+    assert m15.be_buffer_usd == 0.30
+    assert m15.runner_horizon_bars == 32
 
     m5 = MODE_SPECS["M5_INTRADAY"]
     assert m5.sl_atr == 1.5
@@ -54,6 +60,89 @@ def test_mode_specs_constants():
     assert m5.horizon_bars == 24
     assert m5.bar_seconds == 300
     assert m5.timeframe == "M5"
+    assert m5.tp1_atr == 1.5
+    assert m5.tp2_atr == 4.0
+    assert m5.trail_atr == 1.5
+    assert m5.be_buffer_usd == 0.30
+    assert m5.runner_horizon_bars == 32
+
+
+def test_compute_split_tp_outcomes_tp1_be_and_runner_trail():
+    # Entry bar 0: c=100, atr=2.0 -> SL=97.0, TP1=103.0, TP2=110.0, trail_dist=3.0
+    # Bar 1: h=103.5, l=99.0 -> hits TP1 (leg1=0.01 closes at +3.0 - 0.30 = +$2.70); SL snaps to 100.30 (BE+$0.30); trail SL=100.50
+    # Bar 2: h=108.0, l=102.0 -> runner surges, best_px=108.0 -> trail SL ratchets to 105.0
+    # Bar 3: h=106.0, l=104.5 -> runner stops out at 105.0 (leg2=0.01 closes at +5.0 - 0.30 = +$4.70)
+    # Total Long PnL = $2.70 + $4.70 = $7.40
+    df_trail = pd.DataFrame({
+        "t": [0, 900, 1800, 2700],
+        "o": [100.0, 100.0, 103.0, 107.0],
+        "h": [100.5, 103.5, 108.0, 106.0],
+        "l": [99.5, 99.0, 102.0, 104.5],
+        "c": [100.0, 103.0, 107.0, 105.0],
+        "atr_14": [2.0, 2.0, 2.0, 2.0],
+    })
+    pnl_l, pnl_s, hold_l, hold_s = compute_split_tp_outcomes(
+        df_trail,
+        sl_atr=1.5,
+        tp1_atr=1.5,
+        tp2_atr=5.0,
+        trail_atr=1.5,
+        be_buffer_usd=0.30,
+        runner_horizon_bars=10,
+        spread_cost_usd=0.30,
+        lot_total=0.02,
+        return_durations=True,
+    )
+    assert round(pnl_l[0], 2) == 7.40
+    assert hold_l[0] == 3  # Bar 0 enters -> bar 3 hits trailing SL
+    # Short on bar 1 hits SL (103.0) with full 0.02 lot -> (-3.0 - 0.30) * 2 = -$6.60
+    assert round(pnl_s[0], 2) == -6.60
+    assert hold_s[0] == 1  # Bar 0 enters -> bar 1 stops out immediately
+
+    # Conservative SL-first tie-break: bar 1 touches both SL (97.0) and TP1 (103.0) -> full 0.02 lot stops at SL
+    df_tie = pd.DataFrame({
+        "t": [0, 900],
+        "o": [100.0, 100.0],
+        "h": [100.5, 104.0],
+        "l": [99.5, 96.0],
+        "c": [100.0, 100.0],
+        "atr_14": [2.0, 2.0],
+    })
+    pnl_l_tie, pnl_s_tie = compute_split_tp_outcomes(
+        df_tie,
+        sl_atr=1.5,
+        tp1_atr=1.5,
+        tp2_atr=5.0,
+        trail_atr=1.5,
+        be_buffer_usd=0.30,
+        runner_horizon_bars=10,
+        spread_cost_usd=0.30,
+        lot_total=0.02,
+    )
+    assert round(pnl_l_tie[0], 2) == -6.60
+    assert round(pnl_s_tie[0], 2) == -6.60
+
+    # TP1 hit then immediate pullback to BE+$0.30: leg1=+$2.70, leg2=(+0.30-0.30)=$0.00 -> total=+$2.70
+    df_be = pd.DataFrame({
+        "t": [0, 900, 1800],
+        "o": [100.0, 100.0, 102.0],
+        "h": [100.5, 103.0, 102.0],
+        "l": [99.5, 99.0, 100.0],
+        "c": [100.0, 102.0, 100.0],
+        "atr_14": [2.0, 2.0, 2.0],
+    })
+    pnl_l_be, _ = compute_split_tp_outcomes(
+        df_be,
+        sl_atr=1.5,
+        tp1_atr=1.5,
+        tp2_atr=5.0,
+        trail_atr=1.5,
+        be_buffer_usd=0.30,
+        runner_horizon_bars=10,
+        spread_cost_usd=0.30,
+        lot_total=0.02,
+    )
+    assert round(pnl_l_be[0], 2) == 2.70
 
 
 def test_triple_barrier_applies_spread_and_sl_first_tiebreak():

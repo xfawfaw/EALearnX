@@ -52,12 +52,18 @@ input int    InpMaxPendingOrders    = 2;             // Max concurrent pending o
 input bool   InpCloseOnOppositeBias = false;         // Close open trade if AI reverses strongly
 
 input group "=== Break-Even & Trailing (USD) (Legacy Mode) ==="
-input bool   InpUseAutoBE           = false;         // Enable automatic Break-Even (off for matched ML exits)
+input bool   InpUseAutoBE           = false;         // Enable automatic Break-Even (off; Variant E handles post-TP1 BE)
 input double InpBE_TriggerR         = 0.7;           // Move to BE when profit >= N * initial SL risk
 input double InpBE_BufferUSD        = 0.25;          // Lock-in profit buffer at BE (USD)
-input bool   InpUseTrailing         = false;         // Trail SL after BE is active (off for matched ML exits)
+input bool   InpUseTrailing         = false;         // Trail SL after BE is active (off; Variant E handles runner trail)
 input double InpTrailingDistUSD     = 4.00;          // Trailing distance behind price (USD)
 input double InpTrailingStepUSD     = 1.00;          // Min step before modifying SL (USD)
+
+input group "=== Variant E: 0.02 Split TP1/TP2 + Post-TP1 Runner Trail ==="
+input bool   InpUsePartialTP        = true;          // Enable 50% partial close at TP1 + BE + breathing ATR runner trail
+input double InpMinSplitLot         = 0.02;          // Minimum lot when Partial TP is enabled (splits 0.01 + 0.01)
+input double InpPostTP1_BE_USD      = 0.30;          // BE profit lock buffer (+USD) immediately after TP1 hits
+input double InpRunnerTrailStepUSD  = 0.25;          // Min SL ratchet step while trailing runner after TP1 (USD)
 
 input group "=== Fallback SL/TP (if AI omits) ==="
 input double InpFallbackSL_USD      = 12.00;         // Fallback Stop Loss distance (USD)
@@ -177,7 +183,10 @@ double ClampLotWithMargin(const double raw_lots, const double entry_price, const
    if(step_lot <= 0.0) step_lot = 0.01;
 
    double lots = MathFloor(raw_lots / step_lot) * step_lot;
-   lots = MathMax(min_lot, MathMin(max_lot, lots));
+   double target_min = min_lot;
+   if(InpUsePartialTP && InpMinSplitLot > target_min)
+      target_min = MathMin(max_lot, InpMinSplitLot);
+   lots = MathMax(target_min, MathMin(max_lot, lots));
    lots = NormalizeDouble(lots, 2);
 
    // OrderCalcMargin requires ORDER_TYPE_BUY / ORDER_TYPE_SELL (not pending types).
@@ -354,16 +363,122 @@ void ManageOpenPositions()
       double cur_sl = g_pos.StopLoss();
       double cur_tp = g_pos.TakeProfit();
 
-      // 0. Matched Triple-Barrier H-bar Timeout Close (respects 🔒 Keep / Hold lock)
+      // 0. Matched Triple-Barrier / Runner H-bar Timeout Close (respects 🔒 Keep / Hold lock)
       long max_hold = GetMaxHoldUntil(ticket);
       if(max_hold > 0 && !IsHeldPosition(ticket, g_pos.Comment()) && (long)TimeGMT() >= max_hold)
         {
          if(g_trade.PositionClose(ticket))
            {
-            ClearMaxHoldUntil(ticket);
-            PrintFormat("[EA-LearningX] Triple-barrier timeout close #%I64u (deadline=%I64d)", ticket, max_hold);
+            ClearTicketState(ticket);
+            PrintFormat("[EA-LearningX] Runner timeout close #%I64u (deadline=%I64d)", ticket, max_hold);
            }
          continue;
+        }
+
+      // 0b. Variant E: Split TP1 partial close + BE lock + slow ATR runner trail (no pre-TP1 SL choke)
+      if(InpUsePartialTP)
+        {
+         double tp1_px     = GetTicketTP1(ticket);
+         double trail_dist = GetTicketTrailDist(ticket);
+         bool   tp1_done   = IsTP1Done(ticket);
+         double pos_vol    = g_pos.Volume();
+         double min_l      = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+         if(min_l <= 0.0) min_l = 0.01;
+         double step_l     = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+         if(step_l <= 0.0) step_l = 0.01;
+
+         if(g_pos.PositionType() == POSITION_TYPE_BUY)
+           {
+            if(!tp1_done && tp1_px > 0.0 && bid >= tp1_px)
+              {
+               if(pos_vol >= min_l * 2.0 - 1e-9)
+                 {
+                  double close_vol = NormalizeDouble(MathFloor((pos_vol * 0.5) / step_l) * step_l, 2);
+                  close_vol = MathMax(min_l, close_vol);
+                  if(g_trade.PositionClosePartial(ticket, close_vol))
+                    {
+                     MarkTP1Done(ticket);
+                     tp1_done = true;
+                     PrintFormat("[EA-LearningX] TP1 hit BUY #%I64u @ %.2f -> partial closed %.2f lot", ticket, bid, close_vol);
+                    }
+                 }
+               else
+                 {
+                  MarkTP1Done(ticket);
+                  tp1_done = true;
+                 }
+
+               if(tp1_done)
+                 {
+                  double be_sl = NormPrice(open_p + InpPostTP1_BE_USD);
+                  if(bid - be_sl > stops_dist && (cur_sl == 0.0 || be_sl > cur_sl))
+                    {
+                     if(g_trade.PositionModify(ticket, be_sl, cur_tp))
+                       {
+                        cur_sl = be_sl;
+                        PrintFormat("[EA-LearningX] Post-TP1 BE locked BUY #%I64u -> SL=%.2f", ticket, be_sl);
+                       }
+                    }
+                 }
+              }
+
+            if(tp1_done && trail_dist > 0.0)
+              {
+               double min_be_sl = NormPrice(open_p + InpPostTP1_BE_USD);
+               double trail_sl  = NormPrice(MathMax(min_be_sl, bid - trail_dist));
+               if(bid - trail_sl > stops_dist && (cur_sl == 0.0 || trail_sl >= cur_sl + InpRunnerTrailStepUSD))
+                 {
+                  if(g_trade.PositionModify(ticket, trail_sl, cur_tp))
+                     cur_sl = trail_sl;
+                 }
+              }
+           }
+         else if(g_pos.PositionType() == POSITION_TYPE_SELL)
+           {
+            if(!tp1_done && tp1_px > 0.0 && ask <= tp1_px)
+              {
+               if(pos_vol >= min_l * 2.0 - 1e-9)
+                 {
+                  double close_vol = NormalizeDouble(MathFloor((pos_vol * 0.5) / step_l) * step_l, 2);
+                  close_vol = MathMax(min_l, close_vol);
+                  if(g_trade.PositionClosePartial(ticket, close_vol))
+                    {
+                     MarkTP1Done(ticket);
+                     tp1_done = true;
+                     PrintFormat("[EA-LearningX] TP1 hit SELL #%I64u @ %.2f -> partial closed %.2f lot", ticket, ask, close_vol);
+                    }
+                 }
+               else
+                 {
+                  MarkTP1Done(ticket);
+                  tp1_done = true;
+                 }
+
+               if(tp1_done)
+                 {
+                  double be_sl = NormPrice(open_p - InpPostTP1_BE_USD);
+                  if(be_sl - ask > stops_dist && (cur_sl == 0.0 || be_sl < cur_sl))
+                    {
+                     if(g_trade.PositionModify(ticket, be_sl, cur_tp))
+                       {
+                        cur_sl = be_sl;
+                        PrintFormat("[EA-LearningX] Post-TP1 BE locked SELL #%I64u -> SL=%.2f", ticket, be_sl);
+                       }
+                    }
+                 }
+              }
+
+            if(tp1_done && trail_dist > 0.0)
+              {
+               double max_be_sl = NormPrice(open_p - InpPostTP1_BE_USD);
+               double trail_sl  = NormPrice(MathMin(max_be_sl, ask + trail_dist));
+               if(trail_sl - ask > stops_dist && (cur_sl == 0.0 || trail_sl <= cur_sl - InpRunnerTrailStepUSD))
+                 {
+                  if(g_trade.PositionModify(ticket, trail_sl, cur_tp))
+                     cur_sl = trail_sl;
+                 }
+              }
+           }
         }
 
       if(g_pos.PositionType() == POSITION_TYPE_BUY)
@@ -430,19 +545,12 @@ void ManageOpenPositions()
         }
      }
 
-   // Clean up stale LX_MAXH_ globals for positions closed via SL/TP/manual
-   string maxh_prefix = "LX_MAXH_" + IntegerToString(InpMagicNumber) + "_";
-   int prefix_len = StringLen(maxh_prefix);
-   for(int gv_i = GlobalVariablesTotal() - 1; gv_i >= 0; gv_i--)
-     {
-      string gv_name = GlobalVariableName(gv_i);
-      if(StringFind(gv_name, maxh_prefix) == 0)
-        {
-         ulong gv_ticket = (ulong)StringToInteger(StringSubstr(gv_name, prefix_len));
-         if(gv_ticket == 0 || !PositionSelectByTicket(gv_ticket))
-            GlobalVariableDel(gv_name);
-        }
-     }
+   // Clean up stale per-ticket globals for positions closed via SL/TP/manual
+   string mstr = IntegerToString(InpMagicNumber) + "_";
+   PruneTicketPrefixGlobals("LX_MAXH_" + mstr);
+   PruneTicketPrefixGlobals("LX_TP1_" + mstr);
+   PruneTicketPrefixGlobals("LX_TRL_" + mstr);
+   PruneTicketPrefixGlobals("LX_TP1D_" + mstr);
   }
 
 //+------------------------------------------------------------------+
@@ -507,6 +615,68 @@ void ClearMaxHoldUntil(const ulong ticket)
    string key = MaxHoldKey(ticket);
    if(GlobalVariableCheck(key))
       GlobalVariableDel(key);
+  }
+
+//+------------------------------------------------------------------+
+//| Variant E per-ticket TP1 & runner trail global helpers           |
+//+------------------------------------------------------------------+
+string TP1Key(const ulong ticket)     { return "LX_TP1_"  + IntegerToString(InpMagicNumber) + "_" + IntegerToString((long)ticket); }
+string TrailKey(const ulong ticket)   { return "LX_TRL_"  + IntegerToString(InpMagicNumber) + "_" + IntegerToString((long)ticket); }
+string TP1DoneKey(const ulong ticket) { return "LX_TP1D_" + IntegerToString(InpMagicNumber) + "_" + IntegerToString((long)ticket); }
+
+void SetTicketVariantE(const ulong ticket, const double tp1_price, const double trail_dist)
+  {
+   if(ticket == 0) return;
+   if(tp1_price > 0.0)
+      GlobalVariableSet(TP1Key(ticket), NormPrice(tp1_price));
+   if(trail_dist > 0.0)
+      GlobalVariableSet(TrailKey(ticket), trail_dist);
+  }
+
+double GetTicketTP1(const ulong ticket)
+  {
+   string k = TP1Key(ticket);
+   return GlobalVariableCheck(k) ? GlobalVariableGet(k) : 0.0;
+  }
+
+double GetTicketTrailDist(const ulong ticket)
+  {
+   string k = TrailKey(ticket);
+   return GlobalVariableCheck(k) ? GlobalVariableGet(k) : 0.0;
+  }
+
+bool IsTP1Done(const ulong ticket)
+  {
+   return GlobalVariableCheck(TP1DoneKey(ticket));
+  }
+
+void MarkTP1Done(const ulong ticket)
+  {
+   if(ticket > 0)
+      GlobalVariableSet(TP1DoneKey(ticket), 1.0);
+  }
+
+void ClearTicketState(const ulong ticket)
+  {
+   ClearMaxHoldUntil(ticket);
+   string k1 = TP1Key(ticket);     if(GlobalVariableCheck(k1)) GlobalVariableDel(k1);
+   string k2 = TrailKey(ticket);   if(GlobalVariableCheck(k2)) GlobalVariableDel(k2);
+   string k3 = TP1DoneKey(ticket); if(GlobalVariableCheck(k3)) GlobalVariableDel(k3);
+  }
+
+void PruneTicketPrefixGlobals(const string prefix)
+  {
+   int prefix_len = StringLen(prefix);
+   for(int gv_i = GlobalVariablesTotal() - 1; gv_i >= 0; gv_i--)
+     {
+      string gv_name = GlobalVariableName(gv_i);
+      if(StringFind(gv_name, prefix) == 0)
+        {
+         ulong gv_ticket = (ulong)StringToInteger(StringSubstr(gv_name, prefix_len));
+         if(gv_ticket == 0 || !PositionSelectByTicket(gv_ticket))
+            GlobalVariableDel(gv_name);
+        }
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -671,7 +841,7 @@ void ProcessAiSignal()
    long gen_at = 0;
    long expires_at = 0;
    long max_hold_until = 0;
-   double limit_price = 0.0, sl_price = 0.0, tp_price = 0.0;
+   double limit_price = 0.0, sl_price = 0.0, tp_price = 0.0, tp1_price = 0.0, trail_atr_usd = 0.0;
 
    JsonGetString(json, "order_intent", intent, "NONE");
    JsonGetBool(json, "trade_allowed", trade_allowed, false);
@@ -681,6 +851,8 @@ void ProcessAiSignal()
    JsonGetDouble(json, "limit_price", limit_price, 0.0);
    JsonGetDouble(json, "sl_price", sl_price, 0.0);
    JsonGetDouble(json, "tp_price", tp_price, 0.0);
+   JsonGetDouble(json, "tp1_price", tp1_price, 0.0);
+   JsonGetDouble(json, "trail_atr_usd", trail_atr_usd, 0.0);
 
    if(gen_at > 0 && gen_at <= GetLastExecutedSigTs())
      {
@@ -806,23 +978,23 @@ void ProcessAiSignal()
         {
          if(gen_at > 0)
             SetLastExecutedSigTs(gen_at);
-         PrintFormat("[EA-LearningX] %s executed: lots=%.2f sl=%.2f tp=%.2f max_hold=%I64d", intent, lots, sl_price, tp_price, max_hold_until);
-         if(max_hold_until > 0)
+         PrintFormat("[EA-LearningX] %s executed: lots=%.2f sl=%.2f tp1=%.2f tp2=%.2f trail=%.2f max_hold=%I64d",
+                     intent, lots, sl_price, tp1_price, tp_price, trail_atr_usd, max_hold_until);
+         ulong opened_ticket = g_trade.ResultOrder();
+         if(opened_ticket > 0 && PositionSelectByTicket(opened_ticket))
            {
-            ulong order_ticket = g_trade.ResultOrder();
-            if(order_ticket > 0 && PositionSelectByTicket(order_ticket))
+            if(max_hold_until > 0) SetMaxHoldUntil(opened_ticket, max_hold_until);
+            SetTicketVariantE(opened_ticket, tp1_price, trail_atr_usd);
+           }
+         else
+           {
+            for(int pi = PositionsTotal() - 1; pi >= 0; pi--)
               {
-               SetMaxHoldUntil(order_ticket, max_hold_until);
-              }
-            else
-              {
-               for(int pi = PositionsTotal() - 1; pi >= 0; pi--)
+               if(g_pos.SelectByIndex(pi) && g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.Comment() == comment)
                  {
-                  if(g_pos.SelectByIndex(pi) && g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.Comment() == comment)
-                    {
-                     if(GetMaxHoldUntil(g_pos.Ticket()) == 0)
-                        SetMaxHoldUntil(g_pos.Ticket(), max_hold_until);
-                    }
+                  ulong pt = g_pos.Ticket();
+                  if(max_hold_until > 0 && GetMaxHoldUntil(pt) == 0) SetMaxHoldUntil(pt, max_hold_until);
+                  if(GetTicketTP1(pt) == 0.0) SetTicketVariantE(pt, tp1_price, trail_atr_usd);
                  }
               }
            }

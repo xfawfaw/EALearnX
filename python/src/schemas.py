@@ -81,6 +81,8 @@ class EaSignalPayload(BaseModel):
     limit_price: float = 0.0
     sl_price: float = 0.0
     tp_price: float = 0.0
+    tp1_price: float = 0.0
+    trail_atr_usd: float = 0.0
     confidence: float = 0.0
     blackout_until_unix: int = 0
     reason: str = ""
@@ -119,6 +121,8 @@ class MlPrediction(BaseModel):
     entry_price: float
     sl_price: float
     tp_price: float
+    tp1_price: float = 0.0
+    trail_atr_usd: float = 0.0
     max_hold_until_unix: int = Field(default=0, ge=0)
     reason: str = ""
     verified_for_live: bool = False

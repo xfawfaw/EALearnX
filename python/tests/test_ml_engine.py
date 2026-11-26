@@ -155,20 +155,25 @@ def test_runner_verified_auto_emits_signal_with_max_hold_and_respects_hmr_blacko
     assert sig_cfg.trade_allowed is False
     assert bridge.signal_path.exists()
 
-    # 3) Manual confirmation emits trade_allowed=True and positive max_hold_until_unix
+    # 3) Manual confirmation emits trade_allowed=True, Variant E TP1/Trail, and positive max_hold_until_unix
     pred_forced = pred.model_copy(
         update={
             "order_intent": "MARKET_BUY",
             "entry_price": 3850.24,
             "sl_price": 3846.0,
-            "tp_price": 3857.0,
-            "max_hold_until_unix": int(now_kill.timestamp()) + 16 * 900,
+            "tp1_price": 3854.48,
+            "tp_price": 3864.38,
+            "trail_atr_usd": 4.24,
+            "max_hold_until_unix": int(now_kill.timestamp()) + 32 * 900,
         }
     )
     sig_conf = runner_cfg.confirm_prediction(pred_forced, now_utc=now_kill)
     assert sig_conf is not None
     assert sig_conf.trade_allowed is True
-    assert sig_conf.max_hold_until_unix == int(now_kill.timestamp()) + 16 * 900
+    assert sig_conf.tp1_price == 3854.48
+    assert sig_conf.tp_price == 3864.38
+    assert sig_conf.trail_atr_usd == 4.24
+    assert sig_conf.max_hold_until_unix == int(now_kill.timestamp()) + 32 * 900
     assert sig_conf.strategy_mode == "M15_PRECISION"
 
 
@@ -233,8 +238,10 @@ def test_runner_blocks_when_unheld_position_open_or_spread_wide(tmp_path):
         confidence=72,
         entry_price=3850.24,
         sl_price=3845.0,
-        tp_price=3858.0,
-        max_hold_until_unix=int(now_kill.timestamp()) + 14400,
+        tp1_price=3855.48,
+        tp_price=3867.70,
+        trail_atr_usd=5.24,
+        max_hold_until_unix=int(now_kill.timestamp()) + 28800,
         reason="Test bull setup",
         verified_for_live=True,
     )
@@ -280,6 +287,8 @@ def test_runner_blocks_when_unheld_position_open_or_spread_wide(tmp_path):
     _, sig_held, _ = asyncio.run(r2.step_live_cycle("M15_PRECISION", "auto", now_utc=now_kill))
     assert sig_held is not None
     assert sig_held.trade_allowed is True
+    assert sig_held.tp1_price == 3855.48
+    assert sig_held.trail_atr_usd == 5.24
 
     # 3. Spread > $0.60 blocks execution even with no active unheld positions
     r3 = MlSignalRunner(settings, _WideOrNormalFeed(m15_df, m5_df, 0.75), _FakeDataFeeds(), bridge)
@@ -289,13 +298,15 @@ def test_runner_blocks_when_unheld_position_open_or_spread_wide(tmp_path):
     assert sig_wide.trade_allowed is False
     assert "spread" in sig_wide.reason.lower()
 
-    # 4. Extreme VOLATILE SL distance (> ml_max_sl_usd = $15) blocks execution
+    # 4. Extreme VOLATILE SL distance (> ml_max_sl_usd = $10) blocks execution
     wide_sl_pred = fake_pred.model_copy(
         update={
             "order_intent": "MARKET_SELL",
             "entry_price": 3583.81,
-            "sl_price": 3607.73,  # $23.92 SL > $15.00 cap
-            "tp_price": 3545.54,
+            "sl_price": 3596.31,  # $12.50 SL > $10.00 cap
+            "tp1_price": 3571.31,
+            "tp_price": 3542.14,
+            "trail_atr_usd": 12.50,
         }
     )
     r4 = MlSignalRunner(settings, _WideOrNormalFeed(m15_df, m5_df, 0.20), _FakeDataFeeds(), bridge)

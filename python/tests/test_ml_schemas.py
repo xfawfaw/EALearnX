@@ -9,6 +9,8 @@ def test_ea_signal_payload_has_max_hold_default_and_override():
         expires_at_unix=1700000900,
     )
     assert default_sig.max_hold_until_unix == 0
+    assert default_sig.tp1_price == 0.0
+    assert default_sig.trail_atr_usd == 0.0
 
     ml_sig = EaSignalPayload(
         signal_id="sig2",
@@ -17,12 +19,16 @@ def test_ea_signal_payload_has_max_hold_default_and_override():
         order_intent="MARKET_BUY",
         trade_allowed=True,
         sl_price=3840.0,
-        tp_price=3856.0,
-        max_hold_until_unix=1700014400,
+        tp_price=3870.0,
+        tp1_price=3856.0,
+        trail_atr_usd=6.0,
+        max_hold_until_unix=1700028800,
         strategy_mode="M15_PRECISION",
         regime="TRENDING",
     )
-    assert ml_sig.max_hold_until_unix == 1700014400
+    assert ml_sig.max_hold_until_unix == 1700028800
+    assert ml_sig.tp1_price == 3856.0
+    assert ml_sig.trail_atr_usd == 6.0
     assert ml_sig.strategy_mode == "M15_PRECISION"
     assert ml_sig.regime == "TRENDING"
 
@@ -68,3 +74,4 @@ def test_ml_models_and_settings_defaults(tmp_path):
     assert s.ml_m5_bars == 12000
     assert s.ml_poll_interval_seconds == 15
     assert s.ml_retrain_hour_utc == 22
+    assert s.ml_max_sl_usd == 10.0

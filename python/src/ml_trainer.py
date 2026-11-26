@@ -42,13 +42,18 @@ CANDIDATE_THRESHOLDS: tuple[float, ...] = (0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0
 
 @dataclass(frozen=True)
 class ModeSpec:
-    """Trading strategy mode parameters."""
+    """Trading strategy mode parameters (Triple-Barrier labels + Variant E split exits)."""
 
     sl_atr: float
     tp_atr: float
     horizon_bars: int
     bar_seconds: int
     timeframe: str
+    tp1_atr: float = 1.5
+    tp2_atr: float = 5.0
+    trail_atr: float = 1.5
+    be_buffer_usd: float = 0.30
+    runner_horizon_bars: int = 32
 
 
 MODE_SPECS: dict[StrategyMode, ModeSpec] = {
@@ -58,6 +63,11 @@ MODE_SPECS: dict[StrategyMode, ModeSpec] = {
         horizon_bars=16,
         bar_seconds=900,
         timeframe="M15",
+        tp1_atr=1.5,
+        tp2_atr=5.0,
+        trail_atr=1.5,
+        be_buffer_usd=0.30,
+        runner_horizon_bars=32,
     ),
     "M5_INTRADAY": ModeSpec(
         sl_atr=1.5,
@@ -65,6 +75,11 @@ MODE_SPECS: dict[StrategyMode, ModeSpec] = {
         horizon_bars=24,
         bar_seconds=300,
         timeframe="M5",
+        tp1_atr=1.5,
+        tp2_atr=4.0,
+        trail_atr=1.5,
+        be_buffer_usd=0.30,
+        runner_horizon_bars=32,
     ),
 }
 
@@ -243,6 +258,119 @@ def compute_triple_barrier_outcomes(
     return y_long, y_short, pnl_long_usd, pnl_short_usd
 
 
+def compute_split_tp_outcomes(
+    df: pd.DataFrame,
+    sl_atr: float,
+    tp1_atr: float,
+    tp2_atr: float,
+    trail_atr: float,
+    be_buffer_usd: float,
+    runner_horizon_bars: int,
+    spread_cost_usd: float = 0.30,
+    lot_total: float = 0.02,
+    return_durations: bool = False,
+) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Simulate Variant E split-lot exits (50% partial close at TP1, BE+buffer, ATR runner trail).
+
+    Returns (pnl_long_usd, pnl_short_usd), or with hold-bar durations when return_durations=True.
+    """
+    n = len(df)
+    pnl_long = np.zeros(n, dtype=float)
+    pnl_short = np.zeros(n, dtype=float)
+    hold_long = np.ones(n, dtype=int)
+    hold_short = np.ones(n, dtype=int)
+    if n == 0:
+        if return_durations:
+            return pnl_long, pnl_short, hold_long, hold_short
+        return pnl_long, pnl_short
+
+    highs = df["h"].to_numpy(dtype=float)
+    lows = df["l"].to_numpy(dtype=float)
+    closes = df["c"].to_numpy(dtype=float)
+    atrs = df["atr_14"].to_numpy(dtype=float)
+    leg1_lot = lot_total / 2.0
+
+    for i in range(n):
+        entry = closes[i]
+        a = max(atrs[i], 0.5)
+        if i + 1 >= n:
+            continue
+        end_j = min(n, i + 1 + runner_horizon_bars)
+        timeout_j = end_j - 1
+
+        # Long simulation
+        sl = entry - sl_atr * a
+        tp1 = entry + tp1_atr * a
+        tp2 = entry + tp2_atr * a
+        rem = lot_total
+        tp1_done = False
+        best_px = entry
+        total_l = 0.0
+        exit_j_l = timeout_j
+        for j in range(i + 1, end_j):
+            hi, lo = highs[j], lows[j]
+            if lo <= sl:
+                total_l += ((sl - entry) - spread_cost_usd) * 100.0 * rem
+                rem = 0.0
+                exit_j_l = j
+                break
+            if not tp1_done and hi >= tp1:
+                total_l += ((tp1 - entry) - spread_cost_usd) * 100.0 * leg1_lot
+                rem -= leg1_lot
+                tp1_done = True
+                sl = entry + be_buffer_usd
+            if rem > 0.0 and hi >= tp2:
+                total_l += ((tp2 - entry) - spread_cost_usd) * 100.0 * rem
+                rem = 0.0
+                exit_j_l = j
+                break
+            best_px = max(best_px, hi)
+            if tp1_done and trail_atr > 0.0:
+                sl = max(sl, best_px - trail_atr * a)
+        if rem > 0.0:
+            total_l += ((closes[timeout_j] - entry) - spread_cost_usd) * 100.0 * rem
+        pnl_long[i] = round(total_l, 6)
+        hold_long[i] = max(1, exit_j_l - i)
+
+        # Short simulation
+        sl_s = entry + sl_atr * a
+        tp1_s = entry - tp1_atr * a
+        tp2_s = entry - tp2_atr * a
+        rem_s = lot_total
+        tp1_done_s = False
+        best_px_s = entry
+        total_s = 0.0
+        exit_j_s = timeout_j
+        for j in range(i + 1, end_j):
+            hi, lo = highs[j], lows[j]
+            if hi >= sl_s:
+                total_s += ((entry - sl_s) - spread_cost_usd) * 100.0 * rem_s
+                rem_s = 0.0
+                exit_j_s = j
+                break
+            if not tp1_done_s and lo <= tp1_s:
+                total_s += ((entry - tp1_s) - spread_cost_usd) * 100.0 * leg1_lot
+                rem_s -= leg1_lot
+                tp1_done_s = True
+                sl_s = entry - be_buffer_usd
+            if rem_s > 0.0 and lo <= tp2_s:
+                total_s += ((entry - tp2_s) - spread_cost_usd) * 100.0 * rem_s
+                rem_s = 0.0
+                exit_j_s = j
+                break
+            best_px_s = min(best_px_s, lo)
+            if tp1_done_s and trail_atr > 0.0:
+                sl_s = min(sl_s, best_px_s + trail_atr * a)
+        if rem_s > 0.0:
+            total_s += ((entry - closes[timeout_j]) - spread_cost_usd) * 100.0 * rem_s
+        pnl_short[i] = round(total_s, 6)
+        hold_short[i] = max(1, exit_j_s - i)
+
+    if return_durations:
+        return pnl_long, pnl_short, hold_long, hold_short
+    return pnl_long, pnl_short
+
+
 def simulate_oos_backtest(
     probs_long: np.ndarray,
     probs_short: np.ndarray,
@@ -251,6 +379,8 @@ def simulate_oos_backtest(
     horizon_bars: int,
     threshold: float,
     eligible_mask: np.ndarray | None = None,
+    hold_bars_long: np.ndarray | None = None,
+    hold_bars_short: np.ndarray | None = None,
 ) -> tuple[int, float, float, float]:
     """Simulate out-of-sample backtest with sequential non-overlapping position stepping.
 
@@ -321,10 +451,12 @@ def simulate_oos_backtest(
 
         if take_long:
             trade_pnls.append(float(pnl_long[i]))
+            step_bars = int(hold_bars_long[i]) if hold_bars_long is not None else horizon_bars
         else:
             trade_pnls.append(float(pnl_short[i]))
+            step_bars = int(hold_bars_short[i]) if hold_bars_short is not None else horizon_bars
 
-        next_free_idx = i + horizon_bars
+        next_free_idx = i + max(1, step_bars)
 
     trades = len(trade_pnls)
     if trades == 0:
@@ -354,17 +486,35 @@ def search_best_threshold(
     pnl_short: np.ndarray,
     horizon_bars: int,
     eligible_mask: np.ndarray | None = None,
+    hold_bars_long: np.ndarray | None = None,
+    hold_bars_short: np.ndarray | None = None,
 ) -> float:
     """Search for the best decision threshold maximizing validation performance."""
     best_threshold = 0.50
     t_0, wr_0, pf_0, pnl_0 = simulate_oos_backtest(
-        probs_long, probs_short, pnl_long, pnl_short, horizon_bars, 0.50, eligible_mask
+        probs_long,
+        probs_short,
+        pnl_long,
+        pnl_short,
+        horizon_bars,
+        0.50,
+        eligible_mask,
+        hold_bars_long=hold_bars_long,
+        hold_bars_short=hold_bars_short,
     )
     best_score = (pnl_0, pf_0, t_0)
 
     for th in CANDIDATE_THRESHOLDS:
         trades, win_rate, pf, net_pnl = simulate_oos_backtest(
-            probs_long, probs_short, pnl_long, pnl_short, horizon_bars, th, eligible_mask
+            probs_long,
+            probs_short,
+            pnl_long,
+            pnl_short,
+            horizon_bars,
+            th,
+            eligible_mask,
+            hold_bars_long=hold_bars_long,
+            hold_bars_short=hold_bars_short,
         )
         score = (net_pnl, pf, trades)
         if score > best_score:
@@ -462,18 +612,31 @@ def train_and_validate_mode(
     models_dir.mkdir(parents=True, exist_ok=True)
     spec = MODE_SPECS[mode]
 
-    # 1. Compute causal features & Triple-Barrier outcomes
+    # 1. Compute causal features, Triple-Barrier training labels, and Variant E split-TP PnL
     features_df = compute_features(df, htf_df=htf_df if mode == "M5_INTRADAY" else None)
-    y_l, y_s, pnl_l, pnl_s = compute_triple_barrier_outcomes(
+    y_l, y_s, _, _ = compute_triple_barrier_outcomes(
         features_df,
         sl_atr=spec.sl_atr,
         tp_atr=spec.tp_atr,
         horizon_bars=spec.horizon_bars,
         spread_cost_usd=spread_cost_usd,
     )
+    pnl_l, pnl_s, hold_l, hold_s = compute_split_tp_outcomes(
+        features_df,
+        sl_atr=spec.sl_atr,
+        tp1_atr=spec.tp1_atr,
+        tp2_atr=spec.tp2_atr,
+        trail_atr=spec.trail_atr,
+        be_buffer_usd=spec.be_buffer_usd,
+        runner_horizon_bars=spec.runner_horizon_bars,
+        spread_cost_usd=spread_cost_usd,
+        lot_total=0.02,
+        return_durations=True,
+    )
 
-    # Drop last horizon_bars rows (incomplete forward horizon)
-    valid_len = len(features_df) - spec.horizon_bars
+    # Drop last runner_horizon_bars rows (incomplete forward horizon)
+    tail_drop = max(spec.horizon_bars, spec.runner_horizon_bars)
+    valid_len = len(features_df) - tail_drop
     if valid_len < 30:
         raise ValueError(
             f"Insufficient bars ({valid_len}) after dropping warmup and horizon bars."
@@ -484,13 +647,16 @@ def train_and_validate_mode(
     y_s = y_s[:valid_len]
     pnl_l = pnl_l[:valid_len]
     pnl_s = pnl_s[:valid_len]
+    hold_l = hold_l[:valid_len]
+    hold_s = hold_s[:valid_len]
 
-    # 2. Chronological split: 60% train / 20% val / 20% OOS test with embargo
+    # 2. Chronological split: 60% train / 20% val / 20% OOS test with purged embargo
     n = valid_len
+    embargo = tail_drop
     train_end = max(10, int(n * 0.60))
-    val_start = min(n - 10, train_end + spec.horizon_bars)
+    val_start = min(n - 10, train_end + embargo)
     val_end = min(n - 5, max(val_start + 5, int(n * 0.80)))
-    oos_start = min(n - 2, val_end + spec.horizon_bars)
+    oos_start = min(n - 2, val_end + embargo)
     oos_end = n
 
     train_slice = slice(0, train_end)
@@ -539,8 +705,10 @@ def train_and_validate_mode(
         probs_val_s,
         pnl_l[val_slice],
         pnl_s[val_slice],
-        spec.horizon_bars,
+        spec.runner_horizon_bars,
         eligible_mask=val_mask,
+        hold_bars_long=hold_l[val_slice],
+        hold_bars_short=hold_s[val_slice],
     )
 
     # Evaluate on out-of-sample test split
@@ -553,9 +721,11 @@ def train_and_validate_mode(
         probs_oos_s,
         pnl_l[oos_slice],
         pnl_s[oos_slice],
-        spec.horizon_bars,
+        spec.runner_horizon_bars,
         best_th,
         eligible_mask=oos_mask,
+        hold_bars_long=hold_l[oos_slice],
+        hold_bars_short=hold_s[oos_slice],
     )
 
     # 6. Quality gating & automated rollback

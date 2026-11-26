@@ -13,5 +13,6 @@ logs/
 # Compiled MT5 binary (compiled locally via scripts/compile_ea.ps1)
 *.ex5
 
-# Git worktrees
+# Git worktrees & local snapshots
 .worktrees/
+backups/
