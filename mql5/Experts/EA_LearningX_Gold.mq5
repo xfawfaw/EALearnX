@@ -47,7 +47,7 @@ input double InpRiskPercent         = 0.5;           // Risk per trade (% of equ
 input double InpMaxLotSize          = 0.50;          // Hard max lot cap
 input double InpMaxSpreadUSD        = 0.60;          // Max allowed spread in USD (e.g. 0.60 = 60 cents)
 input double InpMaxDailyLossPct     = 20.0;          // Daily max loss halt (% of day start equity)
-input int    InpMaxOpenPositions    = 2;             // Max concurrent positions (legacy AI limit mode)
+input int    InpMaxOpenPositions    = 1;             // Max concurrent unheld positions (1 for ML parity)
 input int    InpMaxPendingOrders    = 2;             // Max concurrent pending orders (legacy AI limit mode)
 input bool   InpCloseOnOppositeBias = false;         // Close open trade if AI reverses strongly
 
@@ -245,8 +245,11 @@ double CalculateLotSize(const double entry_price, const double sl_price, const E
          tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
       if(tick_size <= 0.0 || tick_value <= 0.0)
         {
-         PrintFormat("[EA-LearningX] Lot=0: bad tick info (tick_size=%.5f tick_val=%.5f)", tick_size, tick_value);
-         return 0.0;
+         double fb_min = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+         if(fb_min <= 0.0) fb_min = 0.01;
+         PrintFormat("[EA-LearningX] Tick value syncing (tick_size=%.5f tick_val=%.5f); falling back to min_lot=%.2f",
+                     tick_size, tick_value, fb_min);
+         return ClampLotWithMargin(fb_min, entry_price, order_type);
         }
       loss_per_lot = (sl_dist / tick_size) * tick_value;
      }
@@ -506,6 +509,58 @@ void ClearMaxHoldUntil(const ulong ticket)
       GlobalVariableDel(key);
   }
 
+//+------------------------------------------------------------------+
+//| Persistent signal dedup & unheld position helpers                |
+//+------------------------------------------------------------------+
+string LastSigTsKey()
+  {
+   return "LX_LASTSIG_TS_" + IntegerToString(InpMagicNumber);
+  }
+
+long GetLastExecutedSigTs()
+  {
+   string key = LastSigTsKey();
+   if(!GlobalVariableCheck(key))
+      return 0;
+   return (long)MathRound(GlobalVariableGet(key));
+  }
+
+void SetLastExecutedSigTs(const long gen_at_unix)
+  {
+   if(gen_at_unix <= 0)
+      return;
+   GlobalVariableSet(LastSigTsKey(), (double)gen_at_unix);
+  }
+
+int CountUnheldOpenPositions()
+  {
+   int count = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber)
+        {
+         if(!IsHeldPosition(g_pos.Ticket(), g_pos.Comment()))
+            count++;
+        }
+     }
+   return count;
+  }
+
+bool HasOpenPositionWithComment(const string target_comment)
+  {
+   if(target_comment == "")
+      return false;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber)
+        {
+         if(g_pos.Comment() == target_comment)
+            return true;
+        }
+     }
+   return false;
+  }
+
 bool IsPendingOrderType(const ENUM_ORDER_TYPE t)
   {
    return (t == ORDER_TYPE_BUY_LIMIT || t == ORDER_TYPE_SELL_LIMIT ||
@@ -608,19 +663,30 @@ void ProcessAiSignal()
    if(sig_id == g_last_signal_id)
       return;
 
+   if(!TerminalInfoInteger(TERMINAL_CONNECTED))
+      return;
+
    string intent;
    bool trade_allowed = false;
+   long gen_at = 0;
    long expires_at = 0;
    long max_hold_until = 0;
    double limit_price = 0.0, sl_price = 0.0, tp_price = 0.0;
 
    JsonGetString(json, "order_intent", intent, "NONE");
    JsonGetBool(json, "trade_allowed", trade_allowed, false);
+   JsonGetLong(json, "generated_at_unix", gen_at, 0);
    JsonGetLong(json, "expires_at_unix", expires_at, 0);
    JsonGetLong(json, "max_hold_until_unix", max_hold_until, 0);
    JsonGetDouble(json, "limit_price", limit_price, 0.0);
    JsonGetDouble(json, "sl_price", sl_price, 0.0);
    JsonGetDouble(json, "tp_price", tp_price, 0.0);
+
+   if(gen_at > 0 && gen_at <= GetLastExecutedSigTs())
+     {
+      g_last_signal_id = sig_id;
+      return;
+     }
 
    // Mark consumed immediately so a rejected signal is never retried endlessly
    g_last_signal_id = sig_id;
@@ -690,9 +756,15 @@ void ProcessAiSignal()
 
    if(intent == "MARKET_BUY" || intent == "MARKET_SELL")
      {
-      if(open_pos >= InpMaxOpenPositions)
+      int unheld_pos = CountUnheldOpenPositions();
+      if(unheld_pos >= InpMaxOpenPositions)
         {
-         Print("[EA-LearningX] Max open positions reached.");
+         Print("[EA-LearningX] Max open unheld positions reached.");
+         return;
+        }
+      if(HasOpenPositionWithComment(comment))
+        {
+         PrintFormat("[EA-LearningX] Duplicate signal guard: position with comment %s already open.", comment);
          return;
         }
 
@@ -732,6 +804,8 @@ void ProcessAiSignal()
          PrintFormat("[EA-LearningX] %s failed: %s", intent, g_trade.ResultRetcodeDescription());
       else
         {
+         if(gen_at > 0)
+            SetLastExecutedSigTs(gen_at);
          PrintFormat("[EA-LearningX] %s executed: lots=%.2f sl=%.2f tp=%.2f max_hold=%I64d", intent, lots, sl_price, tp_price, max_hold_until);
          if(max_hold_until > 0)
            {
@@ -922,6 +996,9 @@ void ExportEaState()
 
    long now_utc = (long)TimeGMT();
    bool hmr_active = (g_blackout_until > now_utc);
+   string acct_ccy = AccountInfoString(ACCOUNT_CURRENCY);
+   if(acct_ccy == "")
+      acct_ccy = "USD";
 
    string json = StringFormat(
       "{"
@@ -931,6 +1008,7 @@ void ExportEaState()
       "\"bid\":%.2f,"
       "\"ask\":%.2f,"
       "\"spread_usd\":%.2f,"
+      "\"currency\":\"%s\","
       "\"balance\":%.2f,"
       "\"equity\":%.2f,"
       "\"free_margin\":%.2f,"
@@ -945,7 +1023,7 @@ void ExportEaState()
       "\"closed_deals\":%s"
       "}",
       now_utc, JsonEscape(_Symbol), (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS),
-      bid, ask, ask - bid, bal, eq, AccountInfoDouble(ACCOUNT_MARGIN_FREE),
+      bid, ask, ask - bid, JsonEscape(acct_ccy), bal, eq, AccountInfoDouble(ACCOUNT_MARGIN_FREE),
       daily_pnl,
       g_paused_by_user ? "true" : "false",
       g_daily_halt ? "true" : "false",
@@ -1391,13 +1469,15 @@ void UpdateChartComment()
                  : (g_paused_by_user ? "PAUSED"
                  : (hmr ? "HMR/NEWS BLACKOUT" : "ACTIVE (M1 SAR)"));
 
+   string acct_ccy = AccountInfoString(ACCOUNT_CURRENCY);
+   if(acct_ccy == "") acct_ccy = "USD";
    Comment(StringFormat(
       "=== EA-LearningX (%s) ===\n"
-      "Status: %s | SAR Trail: $%.2f | AI Bias: %s\n"
-      "Equity: %.2f | Daily PnL: %+.2f | Spread: $%.2f\n"
-      "SAR Open: %d | Kept (Hold): %d | SAR Stops: %d\n"
+      "Status: %s | AI Bias: %s | Currency: %s\n"
+      "Equity: %.2f %s | Daily PnL: %+.2f %s | Spread: $%.2f\n"
+      "Open (ML): %d | Kept (Hold): %d | Pending: %d\n"
       "Note: %s",
-      _Symbol, status, g_last_sar_dist, g_ai_bias, eq, pnl,
+      _Symbol, status, g_ai_bias, acct_ccy, eq, acct_ccy, pnl, acct_ccy,
       SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID),
       sar_open, held_pos, sar_pending, g_ai_reason
    ));

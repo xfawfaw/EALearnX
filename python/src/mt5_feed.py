@@ -65,6 +65,13 @@ class Mt5Feed:
                     logger.warning("Error during MT5 shutdown: %s", exc)
             self._initialized = False
 
+    def _reconnect(self) -> None:
+        """Reset dead MT5 IPC session and re-initialize."""
+        logger.warning("MT5 IPC error detected for '%s'; attempting automatic reconnect...", self.symbol)
+        self.shutdown()
+        self._initialized = False
+        self._ensure_initialized()
+
     def _resolve_timeframe(self, timeframe: TimeframeStr) -> int:
         """Resolve timeframe string ('M5', 'M15', 'H1') to MT5 timeframe integer constant."""
         tf_attr = f"TIMEFRAME_{timeframe}"
@@ -81,6 +88,7 @@ class Mt5Feed:
 
         MT5 shift pos=0 is the currently forming unclosed candle.
         Requesting start_pos=1 guarantees only closed candles are retrieved.
+        Automatically reconnects once on transient IPC disconnects (-10001).
 
         Returns DataFrame with schema: ['t', 'o', 'h', 'l', 'c', 'v']
         sorted ascending by 't' with duplicate timestamps dropped.
@@ -92,15 +100,31 @@ class Mt5Feed:
 
         tf_val = self._resolve_timeframe(timeframe)
 
-        if not self._mt5.symbol_select(self.symbol, True):
-            err = getattr(self._mt5, "last_error", lambda: "unknown")()
-            raise RuntimeError(
-                f"Failed to select symbol '{self.symbol}' in MetaTrader5: {err}"
-            )
+        rates = None
+        for attempt in range(2):
+            if not self._mt5.symbol_select(self.symbol, True):
+                err = getattr(self._mt5, "last_error", lambda: "unknown")()
+                if attempt == 0:
+                    try:
+                        self._reconnect()
+                        continue
+                    except RuntimeError:
+                        pass
+                raise RuntimeError(
+                    f"Failed to select symbol '{self.symbol}' in MetaTrader5: {err}"
+                )
 
-        rates = self._mt5.copy_rates_from_pos(self.symbol, tf_val, 1, count)
-        if rates is None or len(rates) == 0:
+            rates = self._mt5.copy_rates_from_pos(self.symbol, tf_val, 1, count)
+            if rates is not None and len(rates) > 0:
+                break
+
             err = getattr(self._mt5, "last_error", lambda: "unknown")()
+            if attempt == 0:
+                try:
+                    self._reconnect()
+                    continue
+                except RuntimeError:
+                    pass
             raise RuntimeError(
                 f"copy_rates_from_pos('{self.symbol}', {timeframe}, 1, {count}) returned None or empty: {err}"
             )
@@ -125,14 +149,27 @@ class Mt5Feed:
     def fetch_tick_spread(self) -> tuple[float, float, float]:
         """Fetch current (bid, ask, spread_usd) from MT5.
 
+        Automatically reconnects once on transient IPC failure.
         Returns (0.0, 0.0, 0.0) safely on any error, missing tick, or disconnected terminal.
         """
         try:
             self._ensure_initialized()
-            if not self._mt5.symbol_select(self.symbol, True):
+            tick = None
+            for attempt in range(2):
+                if not self._mt5.symbol_select(self.symbol, True):
+                    if attempt == 0:
+                        self._reconnect()
+                        continue
+                    return (0.0, 0.0, 0.0)
+
+                tick = self._mt5.symbol_info_tick(self.symbol)
+                if tick:
+                    break
+                if attempt == 0:
+                    self._reconnect()
+                    continue
                 return (0.0, 0.0, 0.0)
 
-            tick = self._mt5.symbol_info_tick(self.symbol)
             if not tick:
                 return (0.0, 0.0, 0.0)
 

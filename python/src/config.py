@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     ml_m5_bars: int = Field(default=12000, ge=1000)
     ml_poll_interval_seconds: int = Field(default=15, ge=1, le=300)
     ml_retrain_hour_utc: int = Field(default=22, ge=0, le=23)
+    ml_max_sl_usd: float = Field(default=15.0, gt=0.0)
 
     # Exness HMR Guard
     hmr_pre_news_minutes: int = Field(default=15, ge=0, le=120)

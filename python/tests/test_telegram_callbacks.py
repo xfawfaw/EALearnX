@@ -430,6 +430,74 @@ def test_approve_confirm_signal_mints_fresh_signal_id_for_mt5(tmp_path: Path) ->
     assert written.signal_id.startswith("ml_app_")
 
 
+def test_telegram_formats_realtime_exness_currency_idr_usd_and_logs_ml_signal(tmp_path: Path) -> None:
+    ctrl = _make_controller(tmp_path, default_mode="auto")
+    idr_state = EaState(
+        updated_at_unix=1795659898,
+        symbol="XAUUSDm",
+        digits=3,
+        bid=3583.07,
+        ask=3583.27,
+        spread_usd=0.20,
+        currency="IDR",
+        balance=1551503.41,
+        equity=1551503.41,
+        free_margin=1551503.41,
+        daily_pnl_usd=195656.77,
+        paused=False,
+        daily_halt=False,
+        hmr_blackout=False,
+        positions=[
+            EaPosition(
+                ticket=5126157417,
+                type="SELL",
+                volume=0.01,
+                open_price=3563.51,
+                sl=3579.66,
+                tp=3534.06,
+                profit=195656.77,
+                be_applied=False,
+                held=False,
+            )
+        ],
+    )
+    ctrl.bridge.read_ea_state = MagicMock(return_value=idr_state)
+
+    status_html = ctrl._format_status(idr_state)
+    assert "Rp 1,551,503" in status_html
+    assert "+Rp 195,657" in status_html
+    assert "$1,551,503" not in status_html
+    assert "[ML]" in status_html
+
+    # Journal records ML signal and /stats formats realized PnL in live IDR currency
+    pred = _sample_ml_prediction()
+    sig = EaSignalPayload(
+        signal_id="ml_m15_precision_1795658400_test01",
+        generated_at_unix=1795659403,
+        expires_at_unix=1795660303,
+        bias="BULLISH",
+        order_intent="MARKET_BUY",
+        trade_allowed=True,
+        limit_price=3583.27,
+        sl_price=3575.0,
+        tp_price=3596.0,
+        confidence=0.69,
+        strategy_mode="M15_PRECISION",
+        regime="TRENDING",
+        reason="Test ML signal",
+    )
+    ctrl.journal.record_ml_signal(pred, sig, "NY_OVERLAP_KILLZONE")
+    stats_html = ctrl._format_stats_html()
+    assert "+Rp 0" in stats_html
+    assert "<code>1</code>" in stats_html
+
+    # Switching to a USD Exness account dynamically switches formatting to $
+    assert ctrl._format_money(1234.56, "USD") == "$1,234.56"
+    assert ctrl._format_money(-42.5, "USD", signed=True) == "-$42.50"
+    assert ctrl._format_money(500.0, "EUR", signed=True) == "+500.00 EUR"
+
+
+
 
 
 

@@ -58,6 +58,7 @@ class BotRuntimeState:
     quota_alert_sent: bool = False
     last_report: AnalysisReport | None = None
     last_ml_prediction: MlPrediction | None = None
+    account_currency: str = "USD"
 
 
 class TelegramController:
@@ -189,6 +190,29 @@ class TelegramController:
             logger.warning("Callback answer skipped (%s): %s", query.data, exc)
 
     @staticmethod
+    def _format_money(amount: float, currency: str = "USD", signed: bool = False) -> str:
+        """Format account currency values dynamically (e.g., IDR -> Rp 1,551,503, USD -> $1,551.50)."""
+        ccy = (currency or "USD").strip().upper()
+        sign = ""
+        if signed:
+            sign = "+" if amount >= 0 else "-"
+        elif amount < 0:
+            sign = "-"
+        mag = abs(amount)
+        if ccy == "IDR":
+            return f"{sign}Rp {mag:,.0f}"
+        if ccy == "USD":
+            return f"{sign}${mag:,.2f}"
+        return f"{sign}{mag:,.2f} {ccy}"
+
+    def _resolve_account_currency(self, state: EaState | None = None) -> str:
+        """Return live Exness account currency from state snapshot (cached in runtime)."""
+        st = state if state is not None else self.bridge.read_ea_state()
+        if st is not None and st.currency:
+            self.runtime.account_currency = st.currency.strip().upper()
+        return self.runtime.account_currency
+
+    @staticmethod
     def _meter_bar(ratio: float, width: int = 8) -> str:
         clamped = max(0.0, min(1.0, ratio))
         filled = int(round(clamped * width))
@@ -229,6 +253,7 @@ class TelegramController:
         flag_str = " · ".join(flags) if flags else "🟢 ACTIVE"
         stale_warn = "  ⚠️ <i>(MT5 closed/stale)</i>" if age > 60 else ""
         pnl_icon = "🟢" if state.daily_pnl_usd >= 0 else "🔴"
+        ccy = self._resolve_account_currency(state)
 
         lines = [
             f"📡 <b>EA-LearningX</b>  <code>{html.escape(state.symbol)}</code>",
@@ -238,8 +263,8 @@ class TelegramController:
             f"🧭 <b>Session:</b> {kz_tag} <i>({filter_tag})</i>",
             "",
             f"💱 <b>Bid / Ask:</b> <code>{state.bid:.2f}</code> / <code>{state.ask:.2f}</code>  <i>(Spread ${state.spread_usd:.2f})</i>",
-            f"💰 <b>Balance:</b> <code>${state.balance:,.2f}</code>  |  <b>Equity:</b> <code>${state.equity:,.2f}</code>",
-            f"{pnl_icon} <b>Daily PnL:</b> <code>${state.daily_pnl_usd:+.2f}</code>  |  <b>Free:</b> <code>${state.free_margin:,.2f}</code>",
+            f"💰 <b>Balance:</b> <code>{self._format_money(state.balance, ccy)}</code>  |  <b>Equity:</b> <code>{self._format_money(state.equity, ccy)}</code>",
+            f"{pnl_icon} <b>Daily PnL:</b> <code>{self._format_money(state.daily_pnl_usd, ccy, signed=True)}</code>  |  <b>Free:</b> <code>{self._format_money(state.free_margin, ccy)}</code>",
             "",
             f"📌 <b>Open Positions ({len(state.positions)}):</b>",
         ]
@@ -247,11 +272,11 @@ class TelegramController:
             lines.append("   <i>None</i>")
         for p in state.positions:
             be_tag = " 🛡[BE]" if p.be_applied else ""
-            hold_tag = " 🔒<b>[KEPT]</b>" if p.held else " ⚡<i>[SAR]</i>"
+            hold_tag = " 🔒<b>[KEPT]</b>" if p.held else " 🤖<i>[ML]</i>"
             p_icon = "🟢" if p.profit >= 0 else "🔴"
             lines.append(
                 f"   {p_icon} <code>#{p.ticket} {p.type} {p.volume:.2f} @ {p.open_price:.2f}</code>{hold_tag}\n"
-                f"      SL <code>{p.sl:.2f}</code> · TP <code>{p.tp:.2f}</code> · <b>{p.profit:+.2f}</b>{be_tag}"
+                f"      SL <code>{p.sl:.2f}</code> · TP <code>{p.tp:.2f}</code> · <b>{self._format_money(p.profit, ccy, signed=True)}</b>{be_tag}"
             )
 
         lines.append(f"\n⏳ <b>Pending Orders ({len(state.pending_orders)}):</b>")
@@ -466,7 +491,7 @@ class TelegramController:
             lines.append(
                 f"\n{icon} <b>{mode_name}:</b> {ver_badge}\n"
                 f"   OOS Trades: <code>{m.oos_trades}</code> · WR: <code>{m.oos_win_rate * 100:.1f}%</code> · PF: <code>{m.oos_profit_factor:.2f}</code>\n"
-                f"   Net PnL: <code>${m.oos_net_pnl_usd:+.2f}</code> · Conf Th: <code>{m.chosen_threshold:.2f}</code>"
+                f"   Net PnL: <code>${m.oos_net_pnl_usd:+.2f} USD (@0.01 lot)</code> · Conf Th: <code>{m.chosen_threshold:.2f}</code>"
             )
             if m.fail_reason:
                 lines.append(f"   Gate Note: <i>{html.escape(m.fail_reason)}</i>")
@@ -507,6 +532,7 @@ class TelegramController:
 
     def _format_stats_html(self) -> str:
         st = self.journal.get_stats()
+        ccy = self._resolve_account_currency()
         wr_bar = self._meter_bar(st.win_rate_pct / 100.0, 10)
         pnl_icon = "🟢" if st.net_realized_pnl >= 0 else "🔴"
         pf_txt = "∞" if st.profit_factor >= 99.0 else f"{st.profit_factor:.2f}"
@@ -517,7 +543,7 @@ class TelegramController:
             f"📥 <b>Trades Opened:</b> <code>{st.trades_opened}</code>  ·  <b>Closed:</b> <code>{st.trades_closed}</code>\n"
             f"🛡 <b>Break-Even Triggered:</b> <code>{st.be_triggered_count}</code>\n"
             f"🎯 <b>Win Rate:</b> <code>{wr_bar}</code> <b>{st.win_rate_pct:.1f}%</b> ({st.wins}W / {st.losses}L)\n"
-            f"⚖️ <b>Profit Factor:</b> <code>{pf_txt}</code>  |  {pnl_icon} <b>Realized PnL:</b> <code>{st.net_realized_pnl:+.2f}</code>"
+            f"⚖️ <b>Profit Factor:</b> <code>{pf_txt}</code>  |  {pnl_icon} <b>Realized PnL:</b> <code>{self._format_money(st.net_realized_pnl, ccy, signed=True)}</code>"
         )
 
     def _status_keyboard(self, state: EaState | None = None) -> InlineKeyboardMarkup:
@@ -1133,6 +1159,7 @@ class TelegramController:
         if not is_new_bar or sig is None or pred is None:
             return
 
+        self.journal.record_ml_signal(pred, sig, evaluate_session().session_name)
         market = self.bridge.read_market_context()
         if sig.trade_allowed:
             msg = (
@@ -1192,6 +1219,7 @@ class TelegramController:
         if state is None:
             return
 
+        self._resolve_account_currency(state)
         pos_map = {p.ticket: p for p in state.positions}
         ord_map = {o.ticket: o for o in state.pending_orders}
         be_set = {p.ticket for p in state.positions if p.be_applied}
@@ -1231,11 +1259,12 @@ class TelegramController:
         for ticket in sorted(self.runtime.known_position_tickets - set(pos_map.keys())):
             self.journal.mark_position_closed(ticket)
             if self.runtime.trade_alerts_enabled:
+                ccy = self._resolve_account_currency(state)
                 pnl_icon = "🟢" if state.daily_pnl_usd >= 0 else "🔴"
                 await self._broadcast(
                     context,
                     f"🏁 <b>MT5 CLOSED</b>  <code>#{ticket}</code>\n"
-                    f"💰 Equity <code>${state.equity:,.2f}</code> · {pnl_icon} Daily PnL <code>${state.daily_pnl_usd:+.2f}</code>",
+                    f"💰 Equity <code>{self._format_money(state.equity, ccy)}</code> · {pnl_icon} Daily PnL <code>{self._format_money(state.daily_pnl_usd, ccy, signed=True)}</code>",
                     reply_markup=self._stats_keyboard(),
                 )
 

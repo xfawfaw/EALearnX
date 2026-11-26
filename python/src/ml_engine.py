@@ -226,6 +226,13 @@ class MlSignalRunner:
         if spread_usd > 0.60:
             blockers.append(f"Spread ${spread_usd:.2f} > $0.60 limit")
 
+        if pred.order_intent != "NONE" and pred.sl_price > 0.0 and pred.entry_price > 0.0:
+            sl_dist = abs(pred.entry_price - pred.sl_price)
+            if sl_dist > self.settings.ml_max_sl_usd:
+                blockers.append(
+                    f"SL distance ${sl_dist:.2f} > ${self.settings.ml_max_sl_usd:.2f} volatility cap"
+                )
+
         trade_allowed = (
             pred.order_intent != "NONE"
             and execution_mode == "auto"

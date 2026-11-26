@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .schemas import AnalysisReport, EaClosedDeal, EaPosition
+from .schemas import AnalysisReport, EaClosedDeal, EaPosition, EaSignalPayload, MlPrediction
 
 
 @dataclass
@@ -102,6 +102,39 @@ class TradeJournal:
                     s.sl_price,
                     s.tp_price,
                     report.validation_note,
+                ),
+            )
+
+    def record_ml_signal(
+        self,
+        pred: MlPrediction,
+        sig: EaSignalPayload,
+        session_name: str = "UNKNOWN",
+    ) -> None:
+        """Log every closed-bar ML signal evaluation into the signals table."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO signals (
+                    signal_id, created_at, bias, order_intent, trade_allowed,
+                    confluence_score, confidence, sentiment_score, session_name,
+                    limit_price, sl_price, tp_price, validation_note
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sig.signal_id,
+                    sig.generated_at_unix,
+                    sig.bias,
+                    sig.order_intent,
+                    1 if sig.trade_allowed else 0,
+                    0,
+                    sig.confidence,
+                    0.0,
+                    session_name,
+                    sig.limit_price,
+                    sig.sl_price,
+                    sig.tp_price,
+                    f"[{pred.mode}/{pred.regime}] {sig.reason}",
                 ),
             )
 

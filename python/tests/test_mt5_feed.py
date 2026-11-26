@@ -208,3 +208,32 @@ def test_mt5_feed_lazy_import_error_when_no_module(monkeypatch):
         feed.fetch_closed_bars("M15", count=5)
 
     assert feed.fetch_tick_spread() == (0.0, 0.0, 0.0)
+
+
+def test_mt5_feed_auto_reconnects_after_ipc_disconnect():
+    class _FlakyIpcMt5(_FakeMt5):
+        def __init__(self):
+            super().__init__()
+            self.init_calls = 0
+            self.select_calls = 0
+
+        def initialize(self):
+            self.init_calls += 1
+            return True
+
+        def symbol_select(self, symbol, enable):
+            self.select_calls += 1
+            # Fail once simulating (-10001, 'IPC send failed') after MT5 restart
+            return self.select_calls >= 2
+
+        def last_error(self):
+            return (-10001, "IPC send failed")
+
+    flaky = _FlakyIpcMt5()
+    feed = Mt5Feed(symbol="XAUUSDm", mt5_module=flaky)
+    df = feed.fetch_closed_bars("M15", count=10)
+    assert len(df) == 10
+    assert flaky.shutdown_called is True
+    assert flaky.init_calls == 2
+    assert flaky.select_calls == 2
+

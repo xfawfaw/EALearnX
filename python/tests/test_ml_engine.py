@@ -289,3 +289,20 @@ def test_runner_blocks_when_unheld_position_open_or_spread_wide(tmp_path):
     assert sig_wide.trade_allowed is False
     assert "spread" in sig_wide.reason.lower()
 
+    # 4. Extreme VOLATILE SL distance (> ml_max_sl_usd = $15) blocks execution
+    wide_sl_pred = fake_pred.model_copy(
+        update={
+            "order_intent": "MARKET_SELL",
+            "entry_price": 3583.81,
+            "sl_price": 3607.73,  # $23.92 SL > $15.00 cap
+            "tp_price": 3545.54,
+        }
+    )
+    r4 = MlSignalRunner(settings, _WideOrNormalFeed(m15_df, m5_df, 0.20), _FakeDataFeeds(), bridge)
+    r4.predict_mode = MagicMock(return_value=(wide_sl_pred, m15_df))
+    _, sig_vol_cap, _ = asyncio.run(r4.step_live_cycle("M15_PRECISION", "auto", now_utc=now_kill))
+    assert sig_vol_cap is not None
+    assert sig_vol_cap.trade_allowed is False
+    assert "volatility cap" in sig_vol_cap.reason.lower()
+
+

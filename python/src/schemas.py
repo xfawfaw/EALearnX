@@ -178,6 +178,7 @@ class EaState(BaseModel):
     bid: float
     ask: float
     spread_usd: float
+    currency: str = "USD"
     balance: float
     equity: float
     free_margin: float
