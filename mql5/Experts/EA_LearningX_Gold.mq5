@@ -43,8 +43,8 @@ input double        InpSAR_HardSL_USD     = 0.0;              // Extra Hard SL i
 input int           InpSAR_FlipCooldownSec= 15;               // Post-close cooldown before next entry (sec)
 
 input group "=== Risk & Exness Safety ==="
-input double InpRiskPercent         = 0.5;           // Risk per trade (% of equity)
-input double InpMaxLotSize          = 1.00;          // Hard max lot cap (1.00 supports Cent 0.55-0.90)
+input double InpRiskPercent         = 5.0;           // Risk per trade (% of equity; 5.0% sizes 0.16-0.25 Cent lot on 4,500 USC)
+input double InpMaxLotSize          = 0.25;          // Hard max lot cap (0.25 Cent lot for Rp 800k / 4,500 USC account)
 input double InpMaxSpreadUSD        = 0.60;          // Max allowed spread in USD (e.g. 0.60 = 60 cents)
 input double InpMaxDailyLossPct     = 20.0;          // Daily max loss halt (% of day start equity)
 input int    InpMaxOpenPositions    = 4;             // Max concurrent unheld BE-locked pyramid positions (B2: up to 4)
@@ -61,7 +61,7 @@ input double InpTrailingStepUSD     = 1.00;          // Min step before modifyin
 
 input group "=== Variant E: 0.02 Split TP1/TP2 + Post-TP1 Runner Trail ==="
 input bool   InpUsePartialTP        = true;          // Enable 50% partial close at TP1 + BE + breathing ATR runner trail
-input double InpMinSplitLot         = 0.02;          // Minimum lot when Partial TP is enabled (splits 0.01 + 0.01)
+input double InpMinSplitLot         = 0.16;          // Minimum lot when Partial TP is enabled (splits 0.08 + 0.08 Cent lot)
 input double InpPostTP1_BE_USD      = 0.30;          // BE profit lock buffer (+USD) immediately after TP1 hits
 input double InpRunnerTrailStepUSD  = 0.25;          // Min SL ratchet step while trailing runner after TP1 (USD)
 
