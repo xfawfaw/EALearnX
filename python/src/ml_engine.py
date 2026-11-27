@@ -229,6 +229,7 @@ class MlSignalRunner:
             blockers.append(blackout_reason)
 
         ea_state = self.bridge.read_ea_state()
+        is_pyramid_layer = False
         if ea_state is not None:
             if ea_state.daily_halt:
                 blockers.append("MT5 EA daily loss halt active")
@@ -240,8 +241,17 @@ class MlSignalRunner:
                 blockers.append(
                     f"Active unheld position #{at_risk[0].ticket} still at risk (pre-BE)"
                 )
-            elif len(unheld) >= 2:
-                blockers.append(f"Max 2 unheld positions running ({len(unheld)} active)")
+            elif len(unheld) >= 4:
+                blockers.append(f"Max 4 unheld positions running ({len(unheld)} active)")
+            elif unheld and pred.order_intent in {"MARKET_BUY", "MARKET_SELL"}:
+                active_side = unheld[0].type
+                sig_side = "BUY" if pred.order_intent == "MARKET_BUY" else "SELL"
+                if active_side != sig_side:
+                    blockers.append(
+                        f"Pyramid direction mismatch: active {active_side} vs {sig_side}"
+                    )
+                else:
+                    is_pyramid_layer = True
 
         _, _, spread_usd = self.mt5_feed.fetch_tick_spread()
         if spread_usd > 0.60:
@@ -272,7 +282,15 @@ class MlSignalRunner:
         else:
             bias = "NEUTRAL"
 
-        reason = pred.reason if not blockers else f"{'; '.join(blockers)} | {pred.reason}"
+        tp1_price = pred.tp1_price
+        if is_pyramid_layer and pred.tp1_price > 0.0 and pred.entry_price > 0.0 and spec.tp1_atr > 0.0:
+            tp1_price = round(
+                pred.entry_price + (spec.layer_tp1_atr / spec.tp1_atr) * (pred.tp1_price - pred.entry_price),
+                2,
+            )
+
+        layer_tag = f" | B2-Layer(TP1 {spec.layer_tp1_atr:.2f}x)" if (is_pyramid_layer and trade_allowed) else ""
+        reason = f"{pred.reason}{layer_tag}" if not blockers else f"{'; '.join(blockers)} | {pred.reason}"
         payload = EaSignalPayload(
             signal_id=f"ml_{mode.lower()}_{pred.bar_time_unix}_{uuid.uuid4().hex[:6]}",
             generated_at_unix=now_unix,
@@ -283,7 +301,7 @@ class MlSignalRunner:
             limit_price=pred.entry_price if pred.order_intent != "NONE" else 0.0,
             sl_price=pred.sl_price,
             tp_price=pred.tp_price,
-            tp1_price=pred.tp1_price,
+            tp1_price=tp1_price,
             trail_atr_usd=pred.trail_atr_usd,
             confidence=round(max(pred.prob_long, pred.prob_short), 3),
             blackout_until_unix=blackout_until,

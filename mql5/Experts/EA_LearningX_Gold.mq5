@@ -47,7 +47,7 @@ input double InpRiskPercent         = 0.5;           // Risk per trade (% of equ
 input double InpMaxLotSize          = 1.00;          // Hard max lot cap (1.00 supports Cent 0.55-0.90)
 input double InpMaxSpreadUSD        = 0.60;          // Max allowed spread in USD (e.g. 0.60 = 60 cents)
 input double InpMaxDailyLossPct     = 20.0;          // Daily max loss halt (% of day start equity)
-input int    InpMaxOpenPositions    = 2;             // Max concurrent unheld positions (Trade #2 only after #1 is BE-locked)
+input int    InpMaxOpenPositions    = 4;             // Max concurrent unheld BE-locked pyramid positions (B2: up to 4)
 input int    InpMaxPendingOrders    = 2;             // Max concurrent pending orders (legacy AI limit mode)
 input bool   InpCloseOnOppositeBias = false;         // Close open trade if AI reverses strongly
 
@@ -742,6 +742,23 @@ int CountAtRiskUnheldPositions()
    return count;
   }
 
+bool HasOppositeUnheldPosition(const bool is_buy)
+  {
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber)
+        {
+         if(IsHeldPosition(g_pos.Ticket(), g_pos.Comment()))
+            continue;
+         if(is_buy && g_pos.PositionType() == POSITION_TYPE_SELL)
+            return true;
+         if(!is_buy && g_pos.PositionType() == POSITION_TYPE_BUY)
+            return true;
+        }
+     }
+   return false;
+  }
+
 bool HasOpenPositionWithComment(const string target_comment)
   {
    if(target_comment == "")
@@ -954,6 +971,7 @@ void ProcessAiSignal()
 
    if(intent == "MARKET_BUY" || intent == "MARKET_SELL")
      {
+      bool is_buy = (intent == "MARKET_BUY");
       int unheld_pos = CountUnheldOpenPositions();
       if(unheld_pos >= InpMaxOpenPositions)
         {
@@ -962,7 +980,12 @@ void ProcessAiSignal()
         }
       if(CountAtRiskUnheldPositions() > 0)
         {
-         Print("[EA-LearningX] Existing unheld position still at risk (pre-BE); Trade #2 blocked.");
+         Print("[EA-LearningX] Existing unheld position still at risk (pre-BE); pyramid layer blocked.");
+         return;
+        }
+      if(HasOppositeUnheldPosition(is_buy))
+        {
+         Print("[EA-LearningX] Pyramid direction mismatch with open unheld position; blocked.");
          return;
         }
       if(HasOpenPositionWithComment(comment))
@@ -971,7 +994,6 @@ void ProcessAiSignal()
          return;
         }
 
-      bool is_buy = (intent == "MARKET_BUY");
       double entry = is_buy ? ask : bid;
       if(sl_price <= 0.0)
          sl_price = is_buy ? (entry - InpFallbackSL_USD) : (entry + InpFallbackSL_USD);

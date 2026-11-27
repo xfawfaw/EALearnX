@@ -52,6 +52,7 @@ class ModeSpec:
     bar_seconds: int
     timeframe: str
     tp1_atr: float = 1.5
+    layer_tp1_atr: float = 1.25
     tp2_atr: float = 5.0
     trail_atr: float = 1.5
     be_buffer_usd: float = 0.30
@@ -66,6 +67,7 @@ MODE_SPECS: dict[StrategyMode, ModeSpec] = {
         bar_seconds=900,
         timeframe="M15",
         tp1_atr=1.5,
+        layer_tp1_atr=1.25,
         tp2_atr=5.0,
         trail_atr=1.5,
         be_buffer_usd=0.30,
@@ -78,6 +80,7 @@ MODE_SPECS: dict[StrategyMode, ModeSpec] = {
         bar_seconds=300,
         timeframe="M5",
         tp1_atr=1.5,
+        layer_tp1_atr=1.25,
         tp2_atr=4.0,
         trail_atr=1.5,
         be_buffer_usd=0.30,

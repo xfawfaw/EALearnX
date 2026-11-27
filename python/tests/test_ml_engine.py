@@ -277,7 +277,7 @@ def test_runner_blocks_when_unheld_position_open_or_spread_wide(tmp_path):
     assert sig_unheld.trade_allowed is False
     assert "unheld position" in sig_unheld.reason.lower()
 
-    # 2. Risk-free unheld position #1 (be_applied=True after TP1) allows Trade #2
+    # 2. Risk-free unheld position #1 (be_applied=True after TP1) allows B2 pyramid Layer #2 (TP1 tightened to 1.25x ATR)
     state_be = state_unheld.model_copy(
         update={
             "positions": [
@@ -293,17 +293,35 @@ def test_runner_blocks_when_unheld_position_open_or_spread_wide(tmp_path):
     _, sig_be, _ = asyncio.run(r2_be.step_live_cycle("M15_PRECISION", "auto", now_utc=now_kill))
     assert sig_be is not None
     assert sig_be.trade_allowed is True
+    assert sig_be.tp1_price == 3854.61  # 3850.24 + (1.25 / 1.5) * 5.24
 
-    # 2b. 2 unheld positions (even if both BE-locked) blocks Trade #3 (max 2 unheld)
-    pos_be_2 = state_be.positions[0].model_copy(update={"ticket": 9002})
-    state_two = state_be.model_copy(update={"positions": [state_be.positions[0], pos_be_2]})
-    bridge._atomic_write_json(bridge.state_path, json.loads(state_two.model_dump_json()))
-    r2_two = MlSignalRunner(settings, _WideOrNormalFeed(m15_df, m5_df, 0.24), _FakeDataFeeds(), bridge)
-    r2_two.predict_mode = MagicMock(return_value=(fake_pred, m15_df))
-    _, sig_two, _ = asyncio.run(r2_two.step_live_cycle("M15_PRECISION", "auto", now_utc=now_kill))
-    assert sig_two is not None
-    assert sig_two.trade_allowed is False
-    assert "max 2 unheld" in sig_two.reason.lower()
+    # 2a. Opposite direction signal while BE-locked BUY is open must be blocked (no counter-hedge)
+    sell_pred = fake_pred.model_copy(
+        update={
+            "order_intent": "MARKET_SELL",
+            "entry_price": 3850.0,
+            "sl_price": 3855.24,
+            "tp1_price": 3844.76,
+            "tp_price": 3832.54,
+        }
+    )
+    r2_opp = MlSignalRunner(settings, _WideOrNormalFeed(m15_df, m5_df, 0.24), _FakeDataFeeds(), bridge)
+    r2_opp.predict_mode = MagicMock(return_value=(sell_pred, m15_df))
+    _, sig_opp, _ = asyncio.run(r2_opp.step_live_cycle("M15_PRECISION", "auto", now_utc=now_kill))
+    assert sig_opp is not None
+    assert sig_opp.trade_allowed is False
+    assert "mismatch" in sig_opp.reason.lower()
+
+    # 2b. 4 unheld positions (even if all BE-locked) blocks Layer #5 (max 4 unheld)
+    four_be = [state_be.positions[0].model_copy(update={"ticket": 9001 + k}) for k in range(4)]
+    state_four = state_be.model_copy(update={"positions": four_be})
+    bridge._atomic_write_json(bridge.state_path, json.loads(state_four.model_dump_json()))
+    r2_four = MlSignalRunner(settings, _WideOrNormalFeed(m15_df, m5_df, 0.24), _FakeDataFeeds(), bridge)
+    r2_four.predict_mode = MagicMock(return_value=(fake_pred, m15_df))
+    _, sig_four, _ = asyncio.run(r2_four.step_live_cycle("M15_PRECISION", "auto", now_utc=now_kill))
+    assert sig_four is not None
+    assert sig_four.trade_allowed is False
+    assert "max 4 unheld" in sig_four.reason.lower()
 
     # 2c. Held-only position allows new ML trade (if spread <= 0.60)
     state_held = state_unheld.model_copy(

@@ -49,6 +49,7 @@ def test_mode_specs_constants():
     assert m15.bar_seconds == 900
     assert m15.timeframe == "M15"
     assert m15.tp1_atr == 1.5
+    assert m15.layer_tp1_atr == 1.25
     assert m15.tp2_atr == 5.0
     assert m15.trail_atr == 1.5
     assert m15.be_buffer_usd == 0.30
@@ -61,6 +62,7 @@ def test_mode_specs_constants():
     assert m5.bar_seconds == 300
     assert m5.timeframe == "M5"
     assert m5.tp1_atr == 1.5
+    assert m5.layer_tp1_atr == 1.25
     assert m5.tp2_atr == 4.0
     assert m5.trail_atr == 1.5
     assert m5.be_buffer_usd == 0.30
