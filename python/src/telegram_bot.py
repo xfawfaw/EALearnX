@@ -221,111 +221,111 @@ class TelegramController:
     @staticmethod
     def _bias_badge(bias: str) -> str:
         if bias == "BULLISH":
-            return "🟢 BULLISH"
+            return "▲ BULLISH"
         if bias == "BEARISH":
-            return "🔴 BEARISH"
-        return "⚪ NEUTRAL"
+            return "▼ BEARISH"
+        return "◇ NEUTRAL"
 
     def _format_status(self, state: EaState | None) -> str:
         session = evaluate_session()
-        kz_tag = "🎯 KillZone ON" if session.in_killzone else f"🕒 {html.escape(session.session_name)}"
-        filter_tag = "KillZone Only" if self.settings.require_killzone else "24/5 Flexible"
-        mode_icon = {"auto": "🟢 AUTO", "confirm": "🟡 CONFIRM", "pause": "⏸ STOP"}.get(
+        kz_tag = "▪ KILLZONE" if session.in_killzone else f"▫ {html.escape(session.session_name)}"
+        filter_tag = "KillZone" if self.settings.require_killzone else "24/5"
+        mode_icon = {"auto": "■ AUTO", "confirm": "◇ CONFIRM", "pause": "▫ PAUSE"}.get(
             self.runtime.mode, self.runtime.mode.upper()
         )
         if state is None:
             return (
-                "📡 <b>EA-LearningX Live Status</b>\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                f"🎛 <b>Mode:</b> {mode_icon}  ·  <b>Hours:</b> {filter_tag}\n"
-                f"🧭 <b>Session:</b> {kz_tag}\n\n"
-                "⚠️ <i>MT5 EA State not connected yet. Open Exness MT5 &amp; attach EA_LearningX_Gold to XAUUSD.</i>"
+                "<b>■ EA-LEARNINGX STATUS</b>\n"
+                "──────────────────\n"
+                f"<b>MODE</b>     <code>{mode_icon}</code> · <code>{filter_tag}</code>\n"
+                f"<b>SESSION</b>  <code>{kz_tag}</code>\n\n"
+                "<i>MT5 offline. Open Exness MT5 &amp; attach EA_LearningX_Gold.</i>"
             )
 
         age = int(time.time()) - state.updated_at_unix
         flags = []
         if state.paused:
-            flags.append("⏸ PAUSED")
+            flags.append("▫ PAUSED")
         if state.daily_halt:
-            flags.append("🛑 DAILY_HALT")
+            flags.append("× DAILY_HALT")
         if state.hmr_blackout:
-            flags.append("📰 HMR_BLACKOUT")
-        flag_str = " · ".join(flags) if flags else "🟢 ACTIVE"
-        stale_warn = "  ⚠️ <i>(MT5 closed/stale)</i>" if age > 60 else ""
-        pnl_icon = "🟢" if state.daily_pnl_usd >= 0 else "🔴"
+            flags.append("× HMR_BLACKOUT")
+        flag_str = " · ".join(flags) if flags else "■ ACTIVE"
+        stale_warn = "  <i>(MT5 stale)</i>" if age > 60 else ""
+        pnl_dir = "▲" if state.daily_pnl_usd >= 0 else "▼"
         ccy = self._resolve_account_currency(state)
 
         lines = [
-            f"📡 <b>EA-LearningX</b>  <code>{html.escape(state.symbol)}</code>",
-            "━━━━━━━━━━━━━━━━━━",
-            f"🎛 <b>Mode:</b> {mode_icon}  |  <b>EA:</b> {flag_str}",
-            f"⏱ <b>Heartbeat:</b> <code>{age}s ago</code>{stale_warn}",
-            f"🧭 <b>Session:</b> {kz_tag} <i>({filter_tag})</i>",
+            f"<b>■ EA-LEARNINGX</b>  <code>{html.escape(state.symbol)}</code>",
+            "──────────────────",
+            f"<b>MODE</b>     <code>{mode_icon}</code>  |  <b>EA</b> <code>{flag_str}</code>",
+            f"<b>SYNC</b>     <code>{age}s ago</code>{stale_warn}",
+            f"<b>SESSION</b>  <code>{kz_tag}</code> <i>({filter_tag})</i>",
             "",
-            f"💱 <b>Bid / Ask:</b> <code>{state.bid:.2f}</code> / <code>{state.ask:.2f}</code>  <i>(Spread ${state.spread_usd:.2f})</i>",
-            f"💰 <b>Balance:</b> <code>{self._format_money(state.balance, ccy)}</code>  |  <b>Equity:</b> <code>{self._format_money(state.equity, ccy)}</code>",
-            f"{pnl_icon} <b>Daily PnL:</b> <code>{self._format_money(state.daily_pnl_usd, ccy, signed=True)}</code>  |  <b>Free:</b> <code>{self._format_money(state.free_margin, ccy)}</code>",
+            f"<b>PRICE</b>    <code>{state.bid:.2f} / {state.ask:.2f}</code>  <i>(sp ${state.spread_usd:.2f})</i>",
+            f"<b>BALANCE</b>  <code>{self._format_money(state.balance, ccy)}</code>  |  <b>EQ</b> <code>{self._format_money(state.equity, ccy)}</code>",
+            f"<b>DAY PNL</b>  {pnl_dir} <code>{self._format_money(state.daily_pnl_usd, ccy, signed=True)}</code>  |  <b>FREE</b> <code>{self._format_money(state.free_margin, ccy)}</code>",
             "",
-            f"📌 <b>Open Positions ({len(state.positions)}):</b>",
+            f"<b>POSITIONS ({len(state.positions)})</b>",
         ]
         if not state.positions:
             lines.append("   <i>None</i>")
         for p in state.positions:
-            be_tag = " 🛡[BE]" if p.be_applied else ""
-            hold_tag = " 🔒<b>[KEPT]</b>" if p.held else " 🤖<i>[ML]</i>"
-            p_icon = "🟢" if p.profit >= 0 else "🔴"
+            be_tag = " [BE]" if p.be_applied else ""
+            hold_tag = " [KEPT]" if p.held else " [ML]"
+            p_dir = "▲" if p.profit >= 0 else "▼"
             lines.append(
-                f"   {p_icon} <code>#{p.ticket} {p.type} {p.volume:.2f} @ {p.open_price:.2f}</code>{hold_tag}\n"
+                f"   {p_dir} <code>#{p.ticket} {p.type} {p.volume:.2f} @ {p.open_price:.2f}</code>{hold_tag}\n"
                 f"      SL <code>{p.sl:.2f}</code> · TP <code>{p.tp:.2f}</code> · <b>{self._format_money(p.profit, ccy, signed=True)}</b>{be_tag}"
             )
 
-        lines.append(f"\n⏳ <b>Pending Orders ({len(state.pending_orders)}):</b>")
+        lines.append(f"\n<b>PENDING ({len(state.pending_orders)})</b>")
         if not state.pending_orders:
             lines.append("   <i>None</i>")
         for o in state.pending_orders:
             lines.append(
-                f"   ⚡ <code>#{o.ticket} {html.escape(o.type)} {o.volume:.2f} @ {o.price:.2f}</code>\n"
+                f"   ▪ <code>#{o.ticket} {html.escape(o.type)} {o.volume:.2f} @ {o.price:.2f}</code>\n"
                 f"      SL <code>{o.sl:.2f}</code> · TP <code>{o.tp:.2f}</code>"
             )
         if self.runtime.last_report is not None:
             r = self.runtime.last_report
             lines.append(
-                f"\n🤖 <b>Last AI:</b> {self._bias_badge(r.decision.bias)} · <code>{html.escape(r.decision.order_intent)}</code> "
-                f"({r.confluence_score}/5) — <i>{html.escape(r.validation_note[:80])}</i>"
+                f"\n<b>LAST AI</b>  {self._bias_badge(r.decision.bias)} · <code>{html.escape(r.decision.order_intent)}</code> "
+                f"({r.confluence_score}/5) — <i>{html.escape(r.validation_note[:75])}</i>"
             )
         return "\n".join(lines)
 
     def _format_analysis_caption(self, report: AnalysisReport, badge: str) -> str:
-        """Compact rich-HTML card (fits Telegram 1024-char photo caption limit cleanly)."""
+        """Monochrome compact HTML card (fits Telegram 1024-char caption cleanly)."""
         d = report.decision
         s = report.signal
         sess_txt = html.escape(report.session_status.session_name if report.session_status else "UNKNOWN")
         conf_bar = self._meter_bar(d.confidence, 8)
         score_bar = self._meter_bar(report.confluence_score / 5.0, 5)
         bias_badge = self._bias_badge(d.bias)
-        exec_badge = "✅ ALLOWED" if s.trade_allowed else "⛔ NO TRADE"
+        exec_badge = "✓ ALLOWED" if s.trade_allowed else "× WAIT"
 
         lines = [
             f"<b>{html.escape(badge)}</b>",
-            "━━━━━━━━━━━━━━━━━━",
-            f"{bias_badge}  ·  <code>{html.escape(d.order_intent)}</code>  ({exec_badge})",
-            f"📊 <b>Conf:</b> <code>{conf_bar}</code> <b>{d.confidence:.0%}</b>  |  <b>Score:</b> <code>{score_bar}</code> <b>{report.confluence_score}/5</b>",
-            f"🧭 <b>Session:</b> <code>{sess_txt}</code>  |  <b>Sent:</b> <code>{d.news_sentiment_score:+.2f}</code>",
+            "──────────────────",
+            f"{bias_badge}  ·  <code>{html.escape(d.order_intent)}</code>  (<code>{exec_badge}</code>)",
+            f"<b>CONF</b>     <code>{conf_bar}</code> <b>{d.confidence:.0%}</b>  |  <b>SCORE</b> <code>{score_bar}</code> <b>{report.confluence_score}/5</b>",
+            f"<b>SESSION</b>  <code>{sess_txt}</code>  |  <b>SENT</b> <code>{d.news_sentiment_score:+.2f}</code>",
         ]
         if d.order_intent != "NONE":
             entry_txt = f"{d.limit_price:.2f}" if d.limit_price > 0 else "MARKET"
             lines.append(
-                f"🎯 <b>Setup:</b> <code>{entry_txt}</code>  |  🛑 <b>SL</b> <code>{d.sl_price:.2f}</code>  |  🏆 <b>TP</b> <code>{d.tp_price:.2f}</code>"
+                f"<b>SETUP</b>    <code>{entry_txt}</code>  |  <b>SL</b> <code>{d.sl_price:.2f}</code>  |  <b>TP</b> <code>{d.tp_price:.2f}</code>"
             )
         if report.smc_snapshot is not None:
             smc = report.smc_snapshot
             lines.append(
-                f"🧱 <b>SMC:</b> H4 <code>{smc.h4.trend}</code> · H1 <code>{smc.h1.trend}</code> · M15 <code>{smc.m15.trend}</code> · P/D <code>{smc.h1.premium_discount_ratio:.2f}</code>"
+                f"<b>SMC</b>      H4 <code>{smc.h4.trend}</code> · H1 <code>{smc.h1.trend}</code> · M15 <code>{smc.m15.trend}</code> · P/D <code>{smc.h1.premium_discount_ratio:.2f}</code>"
             )
         if report.hmr_blackout_active:
-            lines.append(f"🚨 <b>HMR Guard:</b> {html.escape(report.hmr_event_title or 'Active')}")
+            lines.append(f"<b>HMR</b>      × <code>{html.escape(report.hmr_event_title or 'Active')}</code>")
 
-        lines.append(f"\n📝 <b>Gate:</b> <i>{html.escape(report.validation_note[:120])}</i>")
+        lines.append(f"\n<b>NOTE</b>  <i>{html.escape(report.validation_note[:120])}</i>")
         body_no_quote = "\n".join(lines)
         remaining = 960 - len(body_no_quote)
         if remaining > 40:
@@ -333,113 +333,114 @@ class TelegramController:
             if len(raw_snippet) > remaining - 30:
                 raw_snippet = raw_snippet[: max(10, remaining - 33)] + "..."
             lines.append(
-                f"<blockquote expandable>📐 <b>Quick Read:</b> {html.escape(raw_snippet)}</blockquote>"
+                f"<blockquote expandable><b>READ:</b> {html.escape(raw_snippet)}</blockquote>"
             )
         return "\n".join(lines)
 
     def _format_report(self, report: AnalysisReport, prefix: str = "") -> str:
-        """Full HTML card with expandable Macro/News/Technical sections."""
+        """Full monochrome HTML brief with expandable Macro/News/Technical sections."""
         d = report.decision
         s = report.signal
         sess_txt = html.escape(report.session_status.session_name if report.session_status else "UNKNOWN")
         conf_bar = self._meter_bar(d.confidence, 8)
         score_bar = self._meter_bar(report.confluence_score / 5.0, 5)
-        exec_badge = "✅ ALLOWED" if s.trade_allowed else "⛔ NO TRADE"
+        exec_badge = "✓ ALLOWED" if s.trade_allowed else "× WAIT"
 
         lines = []
         if prefix:
             lines.append(f"<b>{html.escape(prefix)}</b>")
-            lines.append("━━━━━━━━━━━━━━━━━━")
+            lines.append("──────────────────")
         lines.extend([
-            f"{self._bias_badge(d.bias)}  ·  <code>{html.escape(d.order_intent)}</code>  ({exec_badge})",
-            f"📊 <b>Confidence:</b> <code>{conf_bar}</code> <b>{d.confidence:.0%}</b>",
-            f"🧩 <b>Confluence:</b> <code>{score_bar}</code> <b>{report.confluence_score}/5</b>  |  <b>Sent:</b> <code>{d.news_sentiment_score:+.2f}</code>",
-            f"🧭 <b>Session:</b> <code>{sess_txt}</code>",
+            f"{self._bias_badge(d.bias)}  ·  <code>{html.escape(d.order_intent)}</code>  (<code>{exec_badge}</code>)",
+            f"<b>CONFIDENCE</b>  <code>{conf_bar}</code> <b>{d.confidence:.0%}</b>",
+            f"<b>CONFLUENCE</b>  <code>{score_bar}</code> <b>{report.confluence_score}/5</b>  |  <b>SENT</b> <code>{d.news_sentiment_score:+.2f}</code>",
+            f"<b>SESSION</b>     <code>{sess_txt}</code>",
         ])
         if d.order_intent != "NONE":
             entry_txt = f"{d.limit_price:.2f}" if d.limit_price > 0 else "MARKET"
             lines.append(
-                f"🎯 <b>Entry:</b> <code>{entry_txt}</code>  |  🛑 <b>SL:</b> <code>{d.sl_price:.2f}</code>  |  🏆 <b>TP:</b> <code>{d.tp_price:.2f}</code>"
+                f"<b>ENTRY</b> <code>{entry_txt}</code>  |  <b>SL</b> <code>{d.sl_price:.2f}</code>  |  <b>TP</b> <code>{d.tp_price:.2f}</code>"
             )
         if report.smc_snapshot is not None:
             smc = report.smc_snapshot
             lines.append(
-                f"🧱 <b>SMC:</b> H4 <code>{smc.h4.trend}({smc.h4.last_event})</code> · "
+                f"<b>SMC</b>   H4 <code>{smc.h4.trend}({smc.h4.last_event})</code> · "
                 f"H1 <code>{smc.h1.trend}({smc.h1.last_event})</code> · "
                 f"M15 <code>{smc.m15.trend}</code> · P/D <code>{smc.h1.premium_discount_ratio:.2f}</code>"
             )
         if report.hmr_blackout_active:
-            lines.append(f"🚨 <b>HMR Guard:</b> BLACKOUT ({html.escape(report.hmr_event_title or '')})")
+            lines.append(f"<b>HMR GUARD</b>  × BLACKOUT ({html.escape(report.hmr_event_title or '')})")
 
-        lines.append(f"\n📝 <b>Validation:</b> <i>{html.escape(report.validation_note)}</i>")
-        lines.append(f"<blockquote expandable>🌐 <b>Macro:</b> {html.escape(d.macro_summary)}</blockquote>")
-        lines.append(f"<blockquote expandable>📰 <b>News Sentiment:</b> {html.escape(d.news_sentiment_summary)}</blockquote>")
-        lines.append(f"<blockquote expandable>📐 <b>Technical:</b> {html.escape(d.technical_summary)}</blockquote>")
+        lines.append(f"\n<b>Validation:</b> <i>{html.escape(report.validation_note)}</i>")
+        lines.append(f"<blockquote expandable><b>Macro:</b> {html.escape(d.macro_summary)}</blockquote>")
+        lines.append(f"<blockquote expandable><b>News Sentiment:</b> {html.escape(d.news_sentiment_summary)}</blockquote>")
+        lines.append(f"<blockquote expandable><b>Technical:</b> {html.escape(d.technical_summary)}</blockquote>")
         if report.confluence_notes:
-            notes_txt = "\n".join(f"• {html.escape(n)}" for n in report.confluence_notes)
-            lines.append(f"<blockquote expandable>✅ <b>Checklist:</b>\n{notes_txt}</blockquote>")
+            notes_txt = "\n".join(f"▪ {html.escape(n)}" for n in report.confluence_notes)
+            lines.append(f"<blockquote expandable><b>Checklist:</b>\n{notes_txt}</blockquote>")
         if report.grounded_sources:
-            lines.append(f"🔗 <b>Sources:</b> <i>{html.escape(', '.join(report.grounded_sources[:3]))}</i>")
+            lines.append(f"<b>Sources:</b> <i>{html.escape(', '.join(report.grounded_sources[:3]))}</i>")
         return "\n".join(lines)
 
     def _analysis_keyboard(self, pending_signal_id: str | None = None) -> InlineKeyboardMarkup:
         rows: list[list[InlineKeyboardButton]] = []
         if pending_signal_id:
             rows.append([
-                InlineKeyboardButton("✅ Approve & Execute", callback_data=f"approve:{pending_signal_id}"),
-                InlineKeyboardButton("❌ Reject", callback_data=f"reject:{pending_signal_id}"),
+                InlineKeyboardButton("✓ Approve & Execute", callback_data=f"approve:{pending_signal_id}"),
+                InlineKeyboardButton("× Reject", callback_data=f"reject:{pending_signal_id}"),
             ])
         rows.append([
-            InlineKeyboardButton("📰 Full AI Brief", callback_data="menu:brief"),
-            InlineKeyboardButton("🧱 SMC Levels", callback_data="menu:smc_levels"),
+            InlineKeyboardButton("▪ Full Brief", callback_data="menu:brief"),
+            InlineKeyboardButton("▪ SMC Levels", callback_data="menu:smc_levels"),
         ])
         rows.append([
-            InlineKeyboardButton("🔄 Re-Analyze", callback_data="menu:analyze"),
-            InlineKeyboardButton("📡 Status", callback_data="menu:status"),
-            InlineKeyboardButton("🎛 Panel", callback_data="menu:panel"),
+            InlineKeyboardButton("↻ Re-Analyze", callback_data="menu:analyze"),
+            InlineKeyboardButton("▪ Status", callback_data="menu:status"),
+            InlineKeyboardButton("■ Panel", callback_data="menu:panel"),
         ])
         return InlineKeyboardMarkup(rows)
 
     def _format_menu_text(self) -> str:
-        mode_map = {"auto": "🟢 AUTO", "confirm": "🟡 CONFIRM", "pause": "⏸ PAUSED"}
+        mode_map = {"auto": "■ AUTO", "confirm": "◇ CONFIRM", "pause": "▫ PAUSED"}
         mode_badge = mode_map.get(self.runtime.mode, self.runtime.mode.upper())
         strat_label = (
-            "🎯 M15 Precision" if self.runtime.strategy_mode == "M15_PRECISION" else "⚡ M5 Intraday"
+            "M15 Precision [B2]" if self.runtime.strategy_mode == "M15_PRECISION" else "M5 Intraday [B2]"
         )
         if self.ml_runner is not None:
             ver_tag = (
-                "✅ Verified"
+                "✓ Verified"
                 if self.ml_runner.is_mode_verified(self.runtime.strategy_mode)
-                else "⚠️ Unverified (Confirm-only)"
+                else "× Unverified"
             )
         else:
-            ver_tag = "⚪ ML Offline"
-        hours = "🎯 KillZone Only" if self.settings.require_killzone else "🌐 Flexible (24/5)"
+            ver_tag = "▫ ML Offline"
+        hours = "▪ KillZone Only" if self.settings.require_killzone else "◇ 24/5 Flexible"
         sess = evaluate_session()
         state = self.bridge.read_ea_state()
         if state is None:
-            mt5_txt = "⚪ Offline"
+            mt5_txt = "▫ Offline"
         else:
             age = int(time.time()) - state.updated_at_unix
-            mt5_txt = "🟢 Live" if age <= 60 and not state.paused else ("⏸ Paused" if age <= 60 else "⚠️ MT5 Closed")
+            mt5_txt = "■ Live" if age <= 60 and not state.paused else ("▫ Paused" if age <= 60 else "× MT5 Closed")
+        sym_txt = html.escape(state.symbol if state is not None else self.settings.mt5_symbol)
         return (
-            "🎛 <b>EA-LearningX Control Panel</b>  <i>(Exness XAUUSD · Dual ML)</i>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            f"⚙️ <b>Execution:</b> {mode_badge}\n"
-            f"🤖 <b>Strategy:</b> {strat_label}  <i>({ver_tag})</i>\n"
-            f"🕒 <b>Hours:</b> {hours}\n"
-            f"🧭 <b>Market:</b> <code>{html.escape(sess.session_name)}</code>  ·  <b>MT5:</b> {mt5_txt}"
+            f"<b>■ EA-LEARNINGX PANEL</b>  <code>{sym_txt} · B2</code>\n"
+            "──────────────────\n"
+            f"<b>MODE</b>      <code>{mode_badge}</code>\n"
+            f"<b>STRATEGY</b>  <code>{strat_label}</code>  <i>({ver_tag})</i>\n"
+            f"<b>HOURS</b>     <code>{hours}</code>\n"
+            f"<b>MARKET</b>    <code>{html.escape(sess.session_name)}</code>  ·  <b>MT5</b> <code>{mt5_txt}</code>"
         )
 
     def _build_menu_keyboard(self) -> InlineKeyboardMarkup:
         def _mode_label(mode_val: ExecutionMode, label: str) -> str:
-            return f"✅ {label}" if self.runtime.mode == mode_val else label
+            return f"■ {label}" if self.runtime.mode == mode_val else label
 
         def _strat_label(strat_val: StrategyMode, label: str) -> str:
-            return f"✅ {label}" if self.runtime.strategy_mode == strat_val else label
+            return f"■ {label}" if self.runtime.strategy_mode == strat_val else label
 
-        kz_label = "🎯 KillZone Only" if self.settings.require_killzone else "🌐 24/5 Flexible"
-        alerts_label = "🔔 Alerts: ON" if self.runtime.trade_alerts_enabled else "🔕 Alerts: OFF"
+        kz_label = "Hours: KillZone" if self.settings.require_killzone else "Hours: 24/5"
+        alerts_label = "Alerts: ON" if self.runtime.trade_alerts_enabled else "Alerts: OFF"
         return InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(_mode_label("auto", "Auto"), callback_data="menu:mode:auto"),
@@ -447,34 +448,34 @@ class TelegramController:
                 InlineKeyboardButton(_mode_label("pause", "Stop"), callback_data="menu:mode:pause"),
             ],
             [
-                InlineKeyboardButton(_strat_label("M15_PRECISION", "🎯 M15 Precision"), callback_data="strategy:M15_PRECISION"),
-                InlineKeyboardButton(_strat_label("M5_INTRADAY", "⚡ M5 Intraday"), callback_data="strategy:M5_INTRADAY"),
+                InlineKeyboardButton(_strat_label("M15_PRECISION", "M15 Precision"), callback_data="strategy:M15_PRECISION"),
+                InlineKeyboardButton(_strat_label("M5_INTRADAY", "M5 Intraday"), callback_data="strategy:M5_INTRADAY"),
             ],
             [
                 InlineKeyboardButton(kz_label, callback_data="menu:toggle_kz"),
-                InlineKeyboardButton("⚡ Analyze Now", callback_data="menu:analyze"),
+                InlineKeyboardButton("Analyze Now", callback_data="menu:analyze"),
             ],
             [
-                InlineKeyboardButton("🤖 ML Models", callback_data="menu:ml_models"),
-                InlineKeyboardButton("🔄 Retrain ML", callback_data="ml:retrain"),
+                InlineKeyboardButton("ML Models", callback_data="menu:ml_models"),
+                InlineKeyboardButton("Retrain ML", callback_data="ml:retrain"),
             ],
             [
-                InlineKeyboardButton("📡 Status", callback_data="menu:status"),
-                InlineKeyboardButton("🧱 SMC Chart", callback_data="menu:smc"),
-                InlineKeyboardButton("📊 Stats", callback_data="menu:stats"),
+                InlineKeyboardButton("Status", callback_data="menu:status"),
+                InlineKeyboardButton("SMC Chart", callback_data="menu:smc"),
+                InlineKeyboardButton("Stats", callback_data="menu:stats"),
             ],
             [
-                InlineKeyboardButton("🛡 Move BE", callback_data="menu:be"),
+                InlineKeyboardButton("Move BE", callback_data="menu:be"),
                 InlineKeyboardButton(alerts_label, callback_data="menu:toggle_alerts"),
-                InlineKeyboardButton("🚨 Close All", callback_data="menu:close_all"),
+                InlineKeyboardButton("Close All", callback_data="menu:close_all"),
             ],
         ])
 
     def _format_ml_models_html(self) -> str:
         lines = [
-            "🤖 <b>EA-LearningX Dual-Mode ML Status</b>",
-            "━━━━━━━━━━━━━━━━━━",
-            f"Active Strategy: <code>{self.runtime.strategy_mode}</code>",
+            "<b>■ EA-LEARNINGX ML BUNDLES</b>",
+            "──────────────────",
+            f"<b>ACTIVE</b>  <code>{self.runtime.strategy_mode}</code>",
         ]
         for mode_name in ("M15_PRECISION", "M5_INTRADAY"):
             bundle = (
@@ -482,36 +483,36 @@ class TelegramController:
                 if self.ml_runner is not None
                 else load_bundle(mode_name, self.settings.ml_models_dir)  # type: ignore[arg-type]
             )
-            icon = "🎯" if mode_name == "M15_PRECISION" else "⚡"
+            tag = "▪" if mode_name == "M15_PRECISION" else "▫"
             if bundle is None:
-                lines.append(f"\n{icon} <b>{mode_name}:</b> ⚪ <i>Not trained yet</i>")
+                lines.append(f"\n{tag} <b>{mode_name}:</b> <i>Not trained</i>")
                 continue
             m = bundle.metrics
-            ver_badge = "✅ VERIFIED LIVE" if m.verified_for_live else "⚠️ UNVERIFIED (Confirm-Only)"
+            ver_badge = "✓ VERIFIED" if m.verified_for_live else "× UNVERIFIED"
             lines.append(
-                f"\n{icon} <b>{mode_name}:</b> {ver_badge}\n"
-                f"   OOS Trades: <code>{m.oos_trades}</code> · WR: <code>{m.oos_win_rate * 100:.1f}%</code> · PF: <code>{m.oos_profit_factor:.2f}</code>\n"
-                f"   Net PnL: <code>${m.oos_net_pnl_usd:+.2f} USD (@0.02 split)</code> · Conf Th: <code>{m.chosen_threshold:.2f}</code>"
+                f"\n{tag} <b>{mode_name}</b>  <code>{ver_badge}</code>\n"
+                f"   Trades: <code>{m.oos_trades}</code> · WR: <code>{m.oos_win_rate * 100:.1f}%</code> · PF: <code>{m.oos_profit_factor:.2f}</code>\n"
+                f"   Net: <code>${m.oos_net_pnl_usd:+.2f} (@0.02 split)</code> · Th: <code>{m.chosen_threshold:.2f}</code>"
             )
             if m.fail_reason:
-                lines.append(f"   Gate Note: <i>{html.escape(m.fail_reason)}</i>")
+                lines.append(f"   Note: <i>{html.escape(m.fail_reason)}</i>")
         if self.runtime.last_ml_prediction is not None:
             p = self.runtime.last_ml_prediction
             lines.append(
-                f"\n📡 <b>Last Bar Signal:</b> <code>{p.timeframe}</code> · HMM <code>{p.regime}</code> · "
-                f"<code>{p.order_intent}</code> (L={p.prob_long:.2f}, S={p.prob_short:.2f})"
+                f"\n<b>LAST BAR</b>  <code>{p.timeframe} · HMM {p.regime} · {p.order_intent}</code> "
+                f"(L={p.prob_long:.2f}, S={p.prob_short:.2f})"
             )
         return "\n".join(lines)
 
     def _ml_models_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("🎯 M15 Precision", callback_data="strategy:M15_PRECISION"),
-                InlineKeyboardButton("⚡ M5 Intraday", callback_data="strategy:M5_INTRADAY"),
+                InlineKeyboardButton("M15 Precision", callback_data="strategy:M15_PRECISION"),
+                InlineKeyboardButton("M5 Intraday", callback_data="strategy:M5_INTRADAY"),
             ],
             [
-                InlineKeyboardButton("🔄 Retrain Active ML", callback_data="ml:retrain"),
-                InlineKeyboardButton("🎛 Panel", callback_data="menu:panel"),
+                InlineKeyboardButton("↻ Retrain Active ML", callback_data="ml:retrain"),
+                InlineKeyboardButton("■ Panel", callback_data="menu:panel"),
             ],
         ])
 
@@ -534,16 +535,16 @@ class TelegramController:
         st = self.journal.get_stats()
         ccy = self._resolve_account_currency()
         wr_bar = self._meter_bar(st.win_rate_pct / 100.0, 10)
-        pnl_icon = "🟢" if st.net_realized_pnl >= 0 else "🔴"
+        pnl_dir = "▲" if st.net_realized_pnl >= 0 else "▼"
         pf_txt = "∞" if st.profit_factor >= 99.0 else f"{st.profit_factor:.2f}"
         return (
-            "📊 <b>EA-LearningX Performance Journal</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            f"🧪 <b>Analyses Logged:</b> <code>{st.total_analyses}</code>  ·  <b>Setups:</b> <code>{st.actionable_signals}</code>\n"
-            f"📥 <b>Trades Opened:</b> <code>{st.trades_opened}</code>  ·  <b>Closed:</b> <code>{st.trades_closed}</code>\n"
-            f"🛡 <b>Break-Even Triggered:</b> <code>{st.be_triggered_count}</code>\n"
-            f"🎯 <b>Win Rate:</b> <code>{wr_bar}</code> <b>{st.win_rate_pct:.1f}%</b> ({st.wins}W / {st.losses}L)\n"
-            f"⚖️ <b>Profit Factor:</b> <code>{pf_txt}</code>  |  {pnl_icon} <b>Realized PnL:</b> <code>{self._format_money(st.net_realized_pnl, ccy, signed=True)}</code>"
+            "<b>■ PERFORMANCE JOURNAL</b>\n"
+            "──────────────────\n"
+            f"<b>ANALYSES</b>  <code>{st.total_analyses}</code>  ·  <b>SETUPS</b> <code>{st.actionable_signals}</code>\n"
+            f"<b>TRADES</b>    <code>{st.trades_opened}</code> open · <code>{st.trades_closed}</code> closed\n"
+            f"<b>BE LOCKS</b>  <code>{st.be_triggered_count}</code>\n"
+            f"<b>WIN RATE</b>  <code>{wr_bar}</code> <b>{st.win_rate_pct:.1f}%</b> ({st.wins}W / {st.losses}L)\n"
+            f"<b>PF</b>        <code>{pf_txt}</code>  |  <b>REALIZED</b> {pnl_dir} <code>{self._format_money(st.net_realized_pnl, ccy, signed=True)}</code>"
         )
 
     def _status_keyboard(self, state: EaState | None = None) -> InlineKeyboardMarkup:
@@ -553,25 +554,25 @@ class TelegramController:
                 if p.held:
                     rows.append([
                         InlineKeyboardButton(
-                            f"🔓 Release #{p.ticket} to SAR",
+                            f"□ Release #{p.ticket}",
                             callback_data=f"unhold:{p.ticket}",
                         )
                     ])
                 else:
                     rows.append([
                         InlineKeyboardButton(
-                            f"🔒 Keep #{p.ticket} (Hold Safe)",
+                            f"■ Keep #{p.ticket} (Hold Safe)",
                             callback_data=f"hold:{p.ticket}",
                         )
                     ])
         rows.extend([
             [
-                InlineKeyboardButton("🔄 Refresh", callback_data="menu:status"),
-                InlineKeyboardButton("⚡ Analyze Now", callback_data="menu:analyze"),
+                InlineKeyboardButton("↻ Refresh", callback_data="menu:status"),
+                InlineKeyboardButton("▪ Analyze Now", callback_data="menu:analyze"),
             ],
             [
-                InlineKeyboardButton("🛡 Move BE", callback_data="menu:be"),
-                InlineKeyboardButton("🎛 Panel", callback_data="menu:panel"),
+                InlineKeyboardButton("▪ Move BE", callback_data="menu:be"),
+                InlineKeyboardButton("■ Panel", callback_data="menu:panel"),
             ],
         ])
         return InlineKeyboardMarkup(rows)
@@ -579,21 +580,21 @@ class TelegramController:
     def _smc_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("🔄 Refresh SMC", callback_data="menu:smc"),
-                InlineKeyboardButton("⚡ Analyze Now", callback_data="menu:analyze"),
+                InlineKeyboardButton("↻ Refresh SMC", callback_data="menu:smc"),
+                InlineKeyboardButton("▪ Analyze Now", callback_data="menu:analyze"),
             ],
             [
-                InlineKeyboardButton("📡 Status", callback_data="menu:status"),
-                InlineKeyboardButton("🎛 Panel", callback_data="menu:panel"),
+                InlineKeyboardButton("▪ Status", callback_data="menu:status"),
+                InlineKeyboardButton("■ Panel", callback_data="menu:panel"),
             ],
         ])
 
     def _stats_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("🔄 Refresh", callback_data="menu:stats"),
-                InlineKeyboardButton("⚡ Analyze Now", callback_data="menu:analyze"),
-                InlineKeyboardButton("🎛 Panel", callback_data="menu:panel"),
+                InlineKeyboardButton("↻ Refresh", callback_data="menu:stats"),
+                InlineKeyboardButton("▪ Analyze Now", callback_data="menu:analyze"),
+                InlineKeyboardButton("■ Panel", callback_data="menu:panel"),
             ]
         ])
 
@@ -637,13 +638,13 @@ class TelegramController:
             return
 
         smc = build_smc_snapshot(market)
-        chart_png = render_analysis_chart(market, smc=smc)
+        chart_png = await asyncio.to_thread(render_analysis_chart, market, None, smc, None)
         smc_summary = html.escape(format_smc_summary(smc))
         if len(smc_summary) > 780:
             smc_summary = smc_summary[:777] + "..."
         caption = (
-            f"🧱 <b>XAUUSD SMC Map</b>  ·  <code>{html.escape(session.session_name)}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<b>■ XAUUSD SMC MAP</b>  ·  <code>{html.escape(session.session_name)}</code>\n"
+            f"──────────────────\n"
             f"H4 <b>{smc.h4.trend}</b> · H1 <b>{smc.h1.trend}</b> · M15 <b>{smc.m15.trend}</b> · P/D <code>{smc.h1.premium_discount_ratio:.2f}</code>\n"
             f"<blockquote expandable>{smc_summary}</blockquote>"
         )
@@ -774,10 +775,12 @@ class TelegramController:
     ) -> None:
         kb = self._analysis_keyboard(pending_signal_id=pending_signal_id)
         if market is not None and len(market.h1_bars) >= 5:
-            chart_png = render_analysis_chart(
-                market=market,
-                report=report,
-                ml_prediction=ml_prediction,
+            chart_png = await asyncio.to_thread(
+                render_analysis_chart,
+                market,
+                report,
+                None,
+                ml_prediction,
             )
             if chart_png is not None:
                 caption = self._format_analysis_caption(report, header)
@@ -826,7 +829,7 @@ class TelegramController:
             context,
             report,
             market,
-            "📰 GEMINI MACRO BRIEF · READ-ONLY",
+            "■ GEMINI MACRO BRIEF · READ-ONLY",
             ml_prediction=ml_pred,
         )
 
@@ -843,7 +846,7 @@ class TelegramController:
             return
         assert update.message is not None
         progress_msg = await update.message.reply_text(
-            "⏳ <i>Analyzing XAUUSD (Gemini 4 Hydrogen + SMC)...</i>",
+            "<i>▪ Analyzing XAUUSD (Gemini + SMC)...</i>",
             parse_mode=ParseMode.HTML,
         )
         await self._run_manual_analysis(context)
@@ -875,8 +878,8 @@ class TelegramController:
                 await self._safe_answer(query, "AUTO blocked: ML model unverified", show_alert=True)
                 if query.message is not None:
                     await query.message.reply_text(
-                        f"⚠️ <b>Cannot enable AUTO:</b> <code>{self.runtime.strategy_mode}</code> ML bundle is unverified "
-                        "(PF &lt; 1.05 or OOS trades &lt; 20). Staying in <b>CONFIRM/PAUSE</b> — tap 🔄 <b>Retrain ML</b> first.",
+                        f"× <b>Cannot enable AUTO:</b> <code>{self.runtime.strategy_mode}</code> ML bundle is unverified "
+                        "(PF &lt; 1.05 or OOS trades &lt; 20). Staying in <b>CONFIRM/PAUSE</b> — tap <b>Retrain ML</b> first.",
                         parse_mode=ParseMode.HTML,
                     )
                 return
@@ -893,7 +896,7 @@ class TelegramController:
             await self._safe_answer(query, toast)
             await self._edit_menu_safely(
                 query,
-                unchanged_notice=f"✅ Mode is already <b>{new_mode.upper()}</b> (<code>{ea_cmd}</code> sent to MT5).",
+                unchanged_notice=f"■ Mode is already <b>{new_mode.upper()}</b> (<code>{ea_cmd}</code> sent to MT5).",
             )
             return
 
@@ -919,9 +922,9 @@ class TelegramController:
                 else f"Strategy set to {new_strat}"
             )
             await self._safe_answer(query, toast)
-            notice = f"🤖 Strategy switched to <b>{new_strat}</b>."
+            notice = f"■ Strategy switched to <b>{new_strat}</b>."
             if downgraded:
-                notice += " ⚠️ <i>Unverified bundle — downgraded execution to CONFIRM.</i>"
+                notice += " × <i>Unverified bundle — downgraded execution to CONFIRM.</i>"
             await self._edit_menu_safely(query, unchanged_notice=notice)
             if downgraded and query.message is not None:
                 await query.message.reply_text(notice, parse_mode=ParseMode.HTML)
@@ -931,14 +934,14 @@ class TelegramController:
             self.settings.require_killzone = not self.settings.require_killzone
             hours = "KillZone Only" if self.settings.require_killzone else "Flexible (24/5)"
             await self._safe_answer(query, f"Hours: {hours}")
-            await self._edit_menu_safely(query, unchanged_notice=f"🕒 Hours: <b>{hours}</b>")
+            await self._edit_menu_safely(query, unchanged_notice=f"▪ Hours: <b>{hours}</b>")
             return
 
         if data == "menu:toggle_alerts":
             self.runtime.trade_alerts_enabled = not self.runtime.trade_alerts_enabled
             state_lbl = "ON" if self.runtime.trade_alerts_enabled else "OFF"
             await self._safe_answer(query, f"Trade alerts: {state_lbl}")
-            await self._edit_menu_safely(query, unchanged_notice=f"🔔 Trade alerts: <b>{state_lbl}</b>")
+            await self._edit_menu_safely(query, unchanged_notice=f"▪ Trade alerts: <b>{state_lbl}</b>")
             return
 
         await self._safe_answer(query)
@@ -946,12 +949,12 @@ class TelegramController:
         if data == "confirm_close_all":
             cmd = self.bridge.send_command("CLOSE_ALL")
             await query.edit_message_text(
-                f"🚨 <b>CLOSE_ALL</b> sent to MT5 EA (<code>{cmd.command_id}</code>).",
+                f"× <b>CLOSE_ALL</b> sent to MT5 EA (<code>{cmd.command_id}</code>).",
                 parse_mode=ParseMode.HTML,
             )
             return
         if data == "cancel_close_all":
-            await query.edit_message_text("❎ <b>CLOSE_ALL</b> cancelled.", parse_mode=ParseMode.HTML)
+            await query.edit_message_text("▫ <b>CLOSE_ALL</b> cancelled.", parse_mode=ParseMode.HTML)
             return
 
         if data.startswith("menu:"):
@@ -980,13 +983,14 @@ class TelegramController:
                 mkt = self.bridge.read_market_context()
                 if mkt is None or not mkt.h1_bars:
                     await query.message.reply_text(
-                        f"🧭 <b>{html.escape(sess.session_name)}</b> — No MT5 bars exported yet.",
+                        f"▪ <b>{html.escape(sess.session_name)}</b> — No MT5 bars exported yet.",
                         parse_mode=ParseMode.HTML,
                     )
                 else:
                     smc = build_smc_snapshot(mkt)
                     await query.message.reply_text(
-                        f"🧱 <b>SMC Levels</b>  ·  <code>{html.escape(sess.session_name)}</code>\n"
+                        f"<b>■ SMC LEVELS</b>  ·  <code>{html.escape(sess.session_name)}</code>\n"
+                        f"──────────────────\n"
                         f"<blockquote expandable>{html.escape(format_smc_summary(smc))}</blockquote>",
                         reply_markup=self._smc_keyboard(),
                         parse_mode=ParseMode.HTML,
@@ -994,10 +998,10 @@ class TelegramController:
                 return
             if action == "brief":
                 if self.runtime.last_report is None:
-                    await query.message.reply_text("ℹ️ No analysis run cached yet. Tap ⚡ <b>Analyze Now</b>.", parse_mode=ParseMode.HTML)
+                    await query.message.reply_text("▫ No analysis run cached yet. Tap <b>Analyze Now</b>.", parse_mode=ParseMode.HTML)
                 else:
                     await query.message.reply_text(
-                        self._format_report(self.runtime.last_report, "📰 FULL AI & SMC BRIEF"),
+                        self._format_report(self.runtime.last_report, "■ FULL AI & SMC BRIEF"),
                         reply_markup=self._analysis_keyboard(),
                         parse_mode=ParseMode.HTML,
                     )
@@ -1020,7 +1024,7 @@ class TelegramController:
                 progress_msg = None
                 try:
                     progress_msg = await query.message.reply_text(
-                        "⏳ <i>Analyzing XAUUSD (Gemini 4 Hydrogen + SMC)...</i>",
+                        "<i>▪ Analyzing XAUUSD (Gemini + SMC)...</i>",
                         parse_mode=ParseMode.HTML,
                     )
                 except (TimedOut, NetworkError) as exc:
@@ -1035,17 +1039,17 @@ class TelegramController:
             if action == "be":
                 cmd = self.bridge.send_command("MOVE_BE_NOW")
                 await query.message.reply_text(
-                    f"🛡 Sent <b>MOVE_BE_NOW</b> (<code>{cmd.command_id}</code>).",
+                    f"■ Sent <b>MOVE_BE_NOW</b> (<code>{cmd.command_id}</code>).",
                     parse_mode=ParseMode.HTML,
                 )
                 return
             if action == "close_all":
                 kb = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🚨 Confirm CLOSE ALL", callback_data="confirm_close_all"),
+                    InlineKeyboardButton("× Confirm CLOSE ALL", callback_data="confirm_close_all"),
                     InlineKeyboardButton("Cancel", callback_data="cancel_close_all"),
                 ]])
                 await query.message.reply_text(
-                    "⚠️ <b>Close all open EA-LearningX positions now?</b>",
+                    "<b>Close all open EA-LearningX positions now?</b>",
                     reply_markup=kb,
                     parse_mode=ParseMode.HTML,
                 )
@@ -1057,14 +1061,14 @@ class TelegramController:
             if sig is None:
                 await query.edit_message_reply_markup(reply_markup=self._analysis_keyboard())
                 await query.message.reply_text(
-                    f"ℹ️ Signal <code>{html.escape(sig_id)}</code> already handled or expired.",
+                    f"▫ Signal <code>{html.escape(sig_id)}</code> already handled or expired.",
                     parse_mode=ParseMode.HTML,
                 )
                 return
             if int(time.time()) > sig.expires_at_unix:
                 await query.edit_message_reply_markup(reply_markup=self._analysis_keyboard())
                 await query.message.reply_text(
-                    f"⌛ Signal <code>{html.escape(sig_id)}</code> expired; not sent.",
+                    f"▫ Signal <code>{html.escape(sig_id)}</code> expired; not sent.",
                     parse_mode=ParseMode.HTML,
                 )
                 return
@@ -1078,7 +1082,7 @@ class TelegramController:
             self.bridge.write_signal(approved_sig)
             await query.edit_message_reply_markup(reply_markup=self._analysis_keyboard())
             await query.message.reply_text(
-                f"✅ <b>Approved</b> <code>{html.escape(approved_sig.order_intent)}</code> (<code>{html.escape(approved_sig.signal_id)}</code>) → sent to MT5 EA.",
+                f"✓ <b>Approved</b> <code>{html.escape(approved_sig.order_intent)}</code> (<code>{html.escape(approved_sig.signal_id)}</code>) → sent to MT5 EA.",
                 parse_mode=ParseMode.HTML,
             )
             return
@@ -1089,9 +1093,9 @@ class TelegramController:
             cmd = self.bridge.send_command("HOLD_TICKET" if is_hold else "UNHOLD_TICKET", ticket=ticket_val)
             assert query.message is not None
             msg = (
-                f"🔒 <b>Kept #{ticket_val}</b> (<code>{cmd.command_id}</code>) — M1 SAR will NOT close or flip this order; SAR will scalp on a separate order."
+                f"■ <b>Kept #{ticket_val}</b> (<code>{cmd.command_id}</code>) — pinned safe."
                 if is_hold
-                else f"🔓 <b>Released #{ticket_val}</b> (<code>{cmd.command_id}</code>) — returned to M1 SAR algorithm."
+                else f"□ <b>Released #{ticket_val}</b> (<code>{cmd.command_id}</code>) — returned to EA."
             )
             await query.message.reply_text(msg, reply_markup=self._status_keyboard(self.bridge.read_ea_state()), parse_mode=ParseMode.HTML)
             return
@@ -1099,35 +1103,35 @@ class TelegramController:
         if data == "ml:retrain":
             assert query.message is not None
             if self.ml_runner is None:
-                await query.message.reply_text("⚠️ ML runner is not configured.")
+                await query.message.reply_text("× ML runner is not configured.")
                 return
             strat = self.runtime.strategy_mode
             await query.message.reply_text(
-                f"🔄 <i>Retraining &amp; walk-forward validating <b>{strat}</b>...</i>",
+                f"<i>↻ Retraining &amp; walk-forward validating <b>{strat}</b>...</i>",
                 parse_mode=ParseMode.HTML,
             )
             try:
                 bundle = await self.ml_runner.retrain_mode(strat)
                 m = bundle.metrics
                 status_line = (
-                    "✅ <b>PASSED OOS GATE — Live model updated</b>"
+                    "✓ <b>PASSED OOS GATE — Live model updated</b>"
                     if m.verified_for_live
-                    else f"⚠️ <b>FAILED OOS GATE — Auto blocked / Prior bundle kept</b> (<i>{html.escape(m.fail_reason)}</i>)"
+                    else f"× <b>FAILED OOS GATE — Auto blocked / Prior bundle kept</b> (<i>{html.escape(m.fail_reason)}</i>)"
                 )
                 await self._broadcast(
                     context,
-                    f"🤖 <b>ML Retrain Complete ({strat})</b>\n"
-                    "━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>■ ML RETRAIN COMPLETE ({strat})</b>\n"
+                    "──────────────────\n"
                     f"{status_line}\n"
-                    f"📊 OOS Trades: <code>{m.oos_trades}</code> · WR: <code>{m.oos_win_rate * 100:.1f}%</code> · PF: <code>{m.oos_profit_factor:.2f}</code>\n"
-                    f"💰 OOS Net PnL: <code>${m.oos_net_pnl_usd:+.2f}</code> · Conf Th: <code>{m.chosen_threshold:.2f}</code>",
+                    f"Trades: <code>{m.oos_trades}</code> · WR: <code>{m.oos_win_rate * 100:.1f}%</code> · PF: <code>{m.oos_profit_factor:.2f}</code>\n"
+                    f"Net: <code>${m.oos_net_pnl_usd:+.2f}</code> · Th: <code>{m.chosen_threshold:.2f}</code>",
                     reply_markup=self._ml_models_keyboard(),
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Manual ML retrain failed")
                 await self._broadcast(
                     context,
-                    f"⚠️ <b>ML Retrain failed ({strat}):</b> <code>{html.escape(str(exc)[:220])}</code>",
+                    f"× <b>ML Retrain failed ({strat}):</b> <code>{html.escape(str(exc)[:220])}</code>",
                 )
             return
 
@@ -1136,7 +1140,7 @@ class TelegramController:
             self.runtime.pending_signals.pop(sig_id, None)
             await query.edit_message_reply_markup(reply_markup=self._analysis_keyboard())
             await query.message.reply_text(
-                f"❌ Rejected signal <code>{html.escape(sig_id)}</code>.",
+                f"× Rejected signal <code>{html.escape(sig_id)}</code>.",
                 parse_mode=ParseMode.HTML,
             )
 
@@ -1162,28 +1166,32 @@ class TelegramController:
         self.journal.record_ml_signal(pred, sig, evaluate_session().session_name)
         market = self.bridge.read_market_context()
         if sig.trade_allowed:
-            side_dot = "🟢 BUY" if sig.order_intent == "MARKET_BUY" else "🔴 SELL"
+            side_dot = "▲ BUY" if sig.order_intent == "MARKET_BUY" else "▼ SELL"
             sl_d = abs(pred.entry_price - sig.sl_price) if sig.sl_price > 0 else 0.0
             tp1_d = abs(sig.tp1_price - pred.entry_price) if sig.tp1_price > 0 else 0.0
             tp2_d = abs(sig.tp_price - pred.entry_price) if sig.tp_price > 0 else 0.0
             rr2 = (tp2_d / sl_d) if sl_d > 0 else 0.0
             lines = [
-                f"{side_dot} · <b>{pred.mode}</b>  <code>{pred.timeframe}</code>",
-                "━━━━━━━━━━━━━━━━━━",
-                f"🎯 <b>Entry</b>  <code>{pred.entry_price:.2f}</code>",
-                f"🛑 <b>SL</b>     <code>{sig.sl_price:.2f}</code>  <i>(-${sl_d:.2f})</i>",
+                f"<b>{side_dot} · {pred.mode}</b>  <code>{pred.timeframe}</code>",
+                "──────────────────",
+                f"<b>ENTRY</b>   <code>{pred.entry_price:.2f}</code>",
+                f"<b>SL</b>      <code>{sig.sl_price:.2f}</code>  <i>(-${sl_d:.2f})</i>",
             ]
             if sig.tp1_price > 0:
-                lines.append(f"🥉 <b>TP1</b>    <code>{sig.tp1_price:.2f}</code>  <i>(+${tp1_d:.2f} · 50% + BE)</i>")
-            lines.append(f"🏆 <b>TP2</b>    <code>{sig.tp_price:.2f}</code>  <i>(+${tp2_d:.2f} · 1:{rr2:.1f}R)</i>")
+                lines.append(f"<b>TP1</b>     <code>{sig.tp1_price:.2f}</code>  <i>(+${tp1_d:.2f} · 50% + BE)</i>")
+            lines.append(f"<b>TP2</b>     <code>{sig.tp_price:.2f}</code>  <i>(+${tp2_d:.2f} · 1:{rr2:.1f}R)</i>")
             if sig.trail_atr_usd > 0:
-                lines.append(f"🏃 <b>Trail</b>  <code>${sig.trail_atr_usd:.2f}</code> behind price")
+                lines.append(f"<b>TRAIL</b>   <code>${sig.trail_atr_usd:.2f}</code>")
             lines.extend([
-                "━━━━━━━━━━━━━━━━━━",
-                f"📊 <code>HMM {pred.regime}</code> · L <code>{pred.prob_long:.0%}</code> / S <code>{pred.prob_short:.0%}</code> <i>(th {pred.threshold:.0%})</i>",
+                "──────────────────",
+                f"<code>HMM {pred.regime}</code> · L <code>{pred.prob_long:.0%}</code> / S <code>{pred.prob_short:.0%}</code> <i>(th {pred.threshold:.0%})</i>",
             ])
             msg = "\n".join(lines)
-            chart_png = render_analysis_chart(market=market, ml_prediction=pred) if market is not None else None
+            chart_png = (
+                await asyncio.to_thread(render_analysis_chart, market, None, None, pred)
+                if market is not None
+                else None
+            )
             if chart_png is not None:
                 await self._broadcast_photo(context, chart_png, msg, reply_markup=self._status_keyboard())
             else:
@@ -1197,14 +1205,19 @@ class TelegramController:
             )
             self.runtime.pending_signals[sig.signal_id] = confirmed_sig
             kb = self._analysis_keyboard(pending_signal_id=sig.signal_id)
-            tp1_str = f" · 🥉 TP1 <code>{pred.tp1_price:.2f}</code>" if pred.tp1_price > 0 else ""
+            tp1_str = f" · <b>TP1</b> <code>{pred.tp1_price:.2f}</code>" if pred.tp1_price > 0 else ""
             msg = (
-                f"🟡 <b>ML APPROVAL REQUIRED ({pred.mode})</b> · <code>{sig.signal_id}</code>\n"
-                f"📊 <code>{pred.timeframe}</code> · HMM <code>{pred.regime}</code> · <b>{pred.order_intent}</b>\n"
-                f"🎯 Entry <code>{pred.entry_price:.2f}</code> · 🛑 SL <code>{pred.sl_price:.2f}</code>{tp1_str} · 🏆 TP2 <code>{pred.tp_price:.2f}</code>\n"
-                f"📈 Prob L=<code>{pred.prob_long:.2f}</code> / S=<code>{pred.prob_short:.2f}</code>"
+                f"<b>◇ APPROVAL REQUIRED ({pred.mode})</b> · <code>{sig.signal_id}</code>\n"
+                "──────────────────\n"
+                f"<code>{pred.timeframe}</code> · <code>HMM {pred.regime}</code> · <b>{pred.order_intent}</b>\n"
+                f"<b>ENTRY</b> <code>{pred.entry_price:.2f}</code> · <b>SL</b> <code>{pred.sl_price:.2f}</code>{tp1_str} · <b>TP2</b> <code>{pred.tp_price:.2f}</code>\n"
+                f"Prob L=<code>{pred.prob_long:.2f}</code> / S=<code>{pred.prob_short:.2f}</code>"
             )
-            chart_png = render_analysis_chart(market=market, ml_prediction=pred) if market is not None else None
+            chart_png = (
+                await asyncio.to_thread(render_analysis_chart, market, None, None, pred)
+                if market is not None
+                else None
+            )
             if chart_png is not None:
                 await self._broadcast_photo(context, chart_png, msg, reply_markup=kb)
             else:
@@ -1255,11 +1268,11 @@ class TelegramController:
         for ticket in sorted(set(pos_map.keys()) - self.runtime.known_position_tickets):
             p = pos_map[ticket]
             if self.runtime.trade_alerts_enabled:
-                p_icon = "🟢" if p.type == "BUY" else "🔴"
+                p_dir = "▲" if p.type == "BUY" else "▼"
                 await self._broadcast(
                     context,
-                    f"{p_icon} <b>MT5 OPENED</b>  <code>#{p.ticket} {p.type} {p.volume:.2f} {html.escape(state.symbol)}</code>\n"
-                    f"🎯 Entry <code>{p.open_price:.2f}</code> · 🛑 SL <code>{p.sl:.2f}</code> · 🏆 TP <code>{p.tp:.2f}</code>",
+                    f"<b>{p_dir} MT5 OPENED</b>  <code>#{p.ticket} {p.type} {p.volume:.2f} {html.escape(state.symbol)}</code>\n"
+                    f"<b>IN</b> <code>{p.open_price:.2f}</code> · <b>SL</b> <code>{p.sl:.2f}</code> · <b>TP</b> <code>{p.tp:.2f}</code>",
                     reply_markup=self._status_keyboard(state),
                 )
 
@@ -1268,7 +1281,7 @@ class TelegramController:
                 p = pos_map[ticket]
                 await self._broadcast(
                     context,
-                    f"🛡 <b>MT5 BREAK-EVEN</b>  <code>#{p.ticket} {p.type}</code>\n"
+                    f"<b>■ MT5 BREAK-EVEN</b>  <code>#{p.ticket} {p.type}</code>\n"
                     f"SL locked at <code>{p.sl:.2f}</code> (entry <code>{p.open_price:.2f}</code>).",
                 )
 
@@ -1276,11 +1289,11 @@ class TelegramController:
             self.journal.mark_position_closed(ticket)
             if self.runtime.trade_alerts_enabled:
                 ccy = self._resolve_account_currency(state)
-                pnl_icon = "🟢" if state.daily_pnl_usd >= 0 else "🔴"
+                pnl_dir = "▲" if state.daily_pnl_usd >= 0 else "▼"
                 await self._broadcast(
                     context,
-                    f"🏁 <b>MT5 CLOSED</b>  <code>#{ticket}</code>\n"
-                    f"💰 Equity <code>{self._format_money(state.equity, ccy)}</code> · {pnl_icon} Daily PnL <code>{self._format_money(state.daily_pnl_usd, ccy, signed=True)}</code>",
+                    f"<b>■ MT5 CLOSED</b>  <code>#{ticket}</code>\n"
+                    f"<b>EQ</b> <code>{self._format_money(state.equity, ccy)}</code> · <b>DAY</b> {pnl_dir} <code>{self._format_money(state.daily_pnl_usd, ccy, signed=True)}</code>",
                     reply_markup=self._stats_keyboard(),
                 )
 
@@ -1290,8 +1303,8 @@ class TelegramController:
             if self.runtime.trade_alerts_enabled and "LIMIT" in o.type.upper():
                 await self._broadcast(
                     context,
-                    f"⏳ <b>MT5 PENDING PLACED</b>  <code>#{o.ticket} {html.escape(o.type)} {o.volume:.2f}</code>\n"
-                    f"🎯 @ <code>{o.price:.2f}</code> · 🛑 SL <code>{o.sl:.2f}</code> · 🏆 TP <code>{o.tp:.2f}</code>",
+                    f"<b>▪ MT5 PENDING</b>  <code>#{o.ticket} {html.escape(o.type)} {o.volume:.2f}</code>\n"
+                    f"@ <code>{o.price:.2f}</code> · <b>SL</b> <code>{o.sl:.2f}</code> · <b>TP</b> <code>{o.tp:.2f}</code>",
                 )
 
         self.runtime.known_position_tickets = set(pos_map.keys())
@@ -1309,9 +1322,10 @@ class TelegramController:
         app = (
             Application.builder()
             .token(self.settings.telegram_bot_token)
-            .connect_timeout(20.0)
-            .read_timeout(30.0)
-            .write_timeout(30.0)
+            .concurrent_updates(True)
+            .connect_timeout(15.0)
+            .read_timeout(25.0)
+            .write_timeout(25.0)
             .pool_timeout(15.0)
             .build()
         )
