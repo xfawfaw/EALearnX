@@ -293,6 +293,17 @@ def test_search_best_threshold():
     )
     assert th in [0.55, 0.60, 0.65, 0.70]
 
+    # When validation PnL is slightly negative everywhere except 0-trade th=0.70, min_trades prevents dead 0-trade selection
+    th_active = search_best_threshold(
+        probs_long=np.array([0.45, 0.45, 0.45]),
+        probs_short=np.array([0.10, 0.10, 0.10]),
+        pnl_long=np.array([-1.0, 2.0, -2.0]),
+        pnl_short=np.array([0.0, 0.0, 0.0]),
+        horizon_bars=1,
+        min_trades=2,
+    )
+    assert th_active <= 0.44
+
 
 def test_failed_retrain_preserves_prior_verified_bundle_or_marks_unverified(tmp_path):
     models_dir = tmp_path / "models"

@@ -67,11 +67,15 @@ def test_ml_models_and_settings_defaults(tmp_path):
     assert summary.fail_reason == ""
     assert pred.order_intent == "MARKET_BUY"
     assert s.default_strategy_mode == "M15_PRECISION"
+    assert s.mt5_symbol == "XAUUSDm"
+    assert s.require_killzone is True
     assert s.ml_spread_cost_usd == 0.30
     assert s.ml_min_profit_factor == 1.05
     assert s.ml_min_oos_trades == 20
-    assert s.ml_m15_bars == 4000
+    assert s.ml_m15_bars == 6000
     assert s.ml_m5_bars == 12000
     assert s.ml_poll_interval_seconds == 15
     assert s.ml_retrain_hour_utc == 22
     assert s.ml_max_sl_usd == 15.0
+    assert s.ml_cent_lot_min == 0.55
+    assert s.ml_cent_lot_max == 0.90

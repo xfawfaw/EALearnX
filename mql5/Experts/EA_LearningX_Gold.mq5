@@ -44,7 +44,7 @@ input int           InpSAR_FlipCooldownSec= 15;               // Post-close cool
 
 input group "=== Risk & Exness Safety ==="
 input double InpRiskPercent         = 0.5;           // Risk per trade (% of equity)
-input double InpMaxLotSize          = 0.50;          // Hard max lot cap
+input double InpMaxLotSize          = 1.00;          // Hard max lot cap (1.00 supports Cent 0.55-0.90)
 input double InpMaxSpreadUSD        = 0.60;          // Max allowed spread in USD (e.g. 0.60 = 60 cents)
 input double InpMaxDailyLossPct     = 20.0;          // Daily max loss halt (% of day start equity)
 input int    InpMaxOpenPositions    = 2;             // Max concurrent unheld positions (Trade #2 only after #1 is BE-locked)
@@ -1666,9 +1666,10 @@ void UpdateChartComment()
    long now_utc = (long)TimeGMT();
    bool hmr = (g_blackout_until > now_utc);
 
+   string active_label = InpUseSarEngine ? "ACTIVE (M1 SAR)" : "ACTIVE (ML Variant E)";
    string status = g_daily_halt ? "HALTED (DAILY LOSS)"
                  : (g_paused_by_user ? "PAUSED"
-                 : (hmr ? "HMR/NEWS BLACKOUT" : "ACTIVE (M1 SAR)"));
+                 : (hmr ? "HMR/NEWS BLACKOUT" : active_label));
 
    string acct_ccy = AccountInfoString(ACCOUNT_CURRENCY);
    if(acct_ccy == "") acct_ccy = "USD";
@@ -1699,11 +1700,14 @@ int OnInit()
    g_trade.SetDeviationInPoints(30);
    ConfigureFillingMode();
 
-   g_atr_m1_handle   = iATR(_Symbol, PERIOD_M1, 14);
-   g_adx_m1_handle   = iADX(_Symbol, PERIOD_M1, 14);
-   g_ema_fast_handle = iMA(_Symbol, PERIOD_M1, 5, 0, MODE_EMA, PRICE_CLOSE);
-   g_ema_slow_handle = iMA(_Symbol, PERIOD_M1, 13, 0, MODE_EMA, PRICE_CLOSE);
-   g_ema_mid_handle  = iMA(_Symbol, PERIOD_M1, 26, 0, MODE_EMA, PRICE_CLOSE);
+   if(InpUseSarEngine)
+     {
+      g_atr_m1_handle   = iATR(_Symbol, PERIOD_M1, 14);
+      g_adx_m1_handle   = iADX(_Symbol, PERIOD_M1, 14);
+      g_ema_fast_handle = iMA(_Symbol, PERIOD_M1, 5, 0, MODE_EMA, PRICE_CLOSE);
+      g_ema_slow_handle = iMA(_Symbol, PERIOD_M1, 13, 0, MODE_EMA, PRICE_CLOSE);
+      g_ema_mid_handle  = iMA(_Symbol, PERIOD_M1, 26, 0, MODE_EMA, PRICE_CLOSE);
+     }
 
    UpdateDailyRiskState();
    ExportMarketContext(true);

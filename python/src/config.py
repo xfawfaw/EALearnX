@@ -43,7 +43,8 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_allowed_user_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)
 
-    # MT5 Bridge
+    # MT5 Bridge & Symbol
+    mt5_symbol: str = Field(default="XAUUSDm")
     mt5_common_files_dir: Path | None = None
 
     # Execution & Risk Controls
@@ -53,7 +54,7 @@ class Settings(BaseSettings):
     min_confidence: float = Field(default=0.70, ge=0.0, le=1.0)
     min_rr_ratio: float = Field(default=1.6, ge=1.0, le=10.0)
     min_confluence_score: int = Field(default=4, ge=1, le=5)
-    require_killzone: bool = False
+    require_killzone: bool = True
     allow_counter_h4: bool = False
 
     # ML & HMM / XGBoost Engine
@@ -62,11 +63,13 @@ class Settings(BaseSettings):
     ml_spread_cost_usd: float = Field(default=0.30, ge=0.0)
     ml_min_profit_factor: float = Field(default=1.05, ge=1.0)
     ml_min_oos_trades: int = Field(default=20, ge=1)
-    ml_m15_bars: int = Field(default=4000, ge=500)
+    ml_m15_bars: int = Field(default=6000, ge=500)
     ml_m5_bars: int = Field(default=12000, ge=1000)
     ml_poll_interval_seconds: int = Field(default=15, ge=1, le=300)
     ml_retrain_hour_utc: int = Field(default=22, ge=0, le=23)
     ml_max_sl_usd: float = Field(default=15.0, gt=0.0)
+    ml_cent_lot_min: float = Field(default=0.55, gt=0.0)
+    ml_cent_lot_max: float = Field(default=0.90, gt=0.0)
 
     # Exness HMR Guard
     hmr_pre_news_minutes: int = Field(default=15, ge=0, le=120)

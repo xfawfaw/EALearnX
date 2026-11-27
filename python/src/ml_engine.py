@@ -230,6 +230,10 @@ class MlSignalRunner:
 
         ea_state = self.bridge.read_ea_state()
         if ea_state is not None:
+            if ea_state.daily_halt:
+                blockers.append("MT5 EA daily loss halt active")
+            if ea_state.paused:
+                blockers.append("MT5 EA paused")
             unheld = [p for p in ea_state.positions if not p.held]
             at_risk = [p for p in unheld if not p.be_applied]
             if at_risk:
@@ -352,6 +356,8 @@ class MlSignalRunner:
                     spread_cost_usd=self.settings.ml_spread_cost_usd,
                     min_pf=pf_floor,
                     min_trades=trades_floor,
+                    require_killzone=self.settings.require_killzone,
+                    max_sl_usd=self.settings.ml_max_sl_usd,
                 )
             return train_and_validate_mode(
                 mode="M15_PRECISION",
@@ -361,6 +367,8 @@ class MlSignalRunner:
                 spread_cost_usd=self.settings.ml_spread_cost_usd,
                 min_pf=pf_floor,
                 min_trades=trades_floor,
+                require_killzone=self.settings.require_killzone,
+                max_sl_usd=self.settings.ml_max_sl_usd,
             )
 
         candidate = await asyncio.to_thread(_worker)

@@ -12,6 +12,7 @@ Implements:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from dataclasses import dataclass
 import logging
 import os
@@ -34,10 +35,11 @@ from xgboost import XGBClassifier
 from python.src.ml_features import FEATURE_COLUMNS, REGIME_COLUMNS, compute_features
 from python.src.ml_regime import RegimeModel
 from python.src.schemas import MlMetricsSummary, StrategyMode
+from python.src.sessions import evaluate_session
 
 logger = logging.getLogger(__name__)
 
-CANDIDATE_THRESHOLDS: tuple[float, ...] = (0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75)
+CANDIDATE_THRESHOLDS: tuple[float, ...] = (0.38, 0.40, 0.42, 0.44, 0.46, 0.48, 0.50, 0.55, 0.60, 0.65, 0.70)
 
 
 @dataclass(frozen=True)
@@ -488,10 +490,11 @@ def search_best_threshold(
     eligible_mask: np.ndarray | None = None,
     hold_bars_long: np.ndarray | None = None,
     hold_bars_short: np.ndarray | None = None,
+    min_trades: int = 0,
 ) -> float:
     """Search for the best decision threshold maximizing validation performance."""
     best_threshold = 0.50
-    t_0, wr_0, pf_0, pnl_0 = simulate_oos_backtest(
+    t_0, _, pf_0, pnl_0 = simulate_oos_backtest(
         probs_long,
         probs_short,
         pnl_long,
@@ -502,10 +505,13 @@ def search_best_threshold(
         hold_bars_long=hold_bars_long,
         hold_bars_short=hold_bars_short,
     )
-    best_score = (pnl_0, pf_0, t_0)
+    best_any_score = (pnl_0, pf_0, t_0)
+    best_any_th = 0.50
+    best_min_score = (-1e12, 0.0, 0)
+    best_min_th: float | None = None
 
     for th in CANDIDATE_THRESHOLDS:
-        trades, win_rate, pf, net_pnl = simulate_oos_backtest(
+        trades, _, pf, net_pnl = simulate_oos_backtest(
             probs_long,
             probs_short,
             pnl_long,
@@ -517,11 +523,14 @@ def search_best_threshold(
             hold_bars_short=hold_bars_short,
         )
         score = (net_pnl, pf, trades)
-        if score > best_score:
-            best_score = score
-            best_threshold = th
+        if score > best_any_score:
+            best_any_score = score
+            best_any_th = th
+        if trades >= min_trades and score > best_min_score:
+            best_min_score = score
+            best_min_th = th
 
-    return best_threshold
+    return best_min_th if best_min_th is not None else best_any_th
 
 
 def _fit_calibrated_xgb(
@@ -606,6 +615,9 @@ def train_and_validate_mode(
     spread_cost_usd: float = 0.30,
     min_pf: float = 1.05,
     min_trades: int = 20,
+    require_killzone: bool = False,
+    max_sl_usd: float = 0.0,
+    lot_total: float = 0.02,
 ) -> TrainedBundle:
     """Train regime & direction models, run walk-forward OOS validation, and apply gating/rollback."""
     models_dir = Path(models_dir)
@@ -630,7 +642,7 @@ def train_and_validate_mode(
         be_buffer_usd=spec.be_buffer_usd,
         runner_horizon_bars=spec.runner_horizon_bars,
         spread_cost_usd=spread_cost_usd,
-        lot_total=0.02,
+        lot_total=lot_total,
         return_durations=True,
     )
 
@@ -689,16 +701,31 @@ def train_and_validate_mode(
         random_state=42,
     )
 
-    # Construct directional alignment mask if M5_INTRADAY
+    # Construct live execution eligibility mask (KillZone, max SL volatility cap, and M5 HTF alignment)
     eligible_mask: np.ndarray | None = None
+    bar_ok = np.ones(valid_len, dtype=bool)
+    if max_sl_usd > 0.0 and "atr_14" in features_df.columns:
+        atr_vals = np.maximum(features_df["atr_14"].to_numpy(dtype=float), 0.5)
+        bar_ok &= (spec.sl_atr * atr_vals) <= max_sl_usd
+    if require_killzone and "t" in features_df.columns:
+        ts_vals = features_df["t"].to_numpy(dtype=int)
+        kz_flags = np.array(
+            [evaluate_session(datetime.fromtimestamp(int(ts), tz=timezone.utc)).in_killzone for ts in ts_vals],
+            dtype=bool,
+        )
+        bar_ok &= kz_flags
+
     if mode == "M5_INTRADAY" and "htf_ema_21_50_diff" in features_df.columns:
         htf_diff = features_df["htf_ema_21_50_diff"].to_numpy(dtype=float)
-        eligible_mask = np.column_stack([htf_diff >= 0.0, htf_diff <= 0.0])
+        eligible_mask = np.column_stack([(htf_diff >= 0.0) & bar_ok, (htf_diff <= 0.0) & bar_ok])
+    elif not np.all(bar_ok):
+        eligible_mask = bar_ok
 
-    # 5. Search best threshold on validation split
+    # 5. Search best threshold on validation split (require minimum validation trade sample)
     probs_val_l = model_long.predict_proba(X_full[val_slice])[:, 1]
     probs_val_s = model_short.predict_proba(X_full[val_slice])[:, 1]
     val_mask = eligible_mask[val_slice] if eligible_mask is not None else None
+    min_val_trades = min(12, max(3, len(pnl_l[val_slice]) // 100))
 
     best_th = search_best_threshold(
         probs_val_l,
@@ -709,6 +736,7 @@ def train_and_validate_mode(
         eligible_mask=val_mask,
         hold_bars_long=hold_l[val_slice],
         hold_bars_short=hold_s[val_slice],
+        min_trades=min_val_trades,
     )
 
     # Evaluate on out-of-sample test split

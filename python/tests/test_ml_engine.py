@@ -344,4 +344,14 @@ def test_runner_blocks_when_unheld_position_open_or_spread_wide(tmp_path):
     assert sig_vol_cap.trade_allowed is False
     assert "volatility cap" in sig_vol_cap.reason.lower()
 
+    # 5. MT5 EA daily_halt=True blocks auto execution cleanly
+    state_halted = state_unheld.model_copy(update={"positions": [], "daily_halt": True})
+    bridge._atomic_write_json(bridge.state_path, json.loads(state_halted.model_dump_json()))
+    r5 = MlSignalRunner(settings, _WideOrNormalFeed(m15_df, m5_df, 0.20), _FakeDataFeeds(), bridge)
+    r5.predict_mode = MagicMock(return_value=(fake_pred, m15_df))
+    _, sig_halt, _ = asyncio.run(r5.step_live_cycle("M15_PRECISION", "auto", now_utc=now_kill))
+    assert sig_halt is not None
+    assert sig_halt.trade_allowed is False
+    assert "daily loss halt" in sig_halt.reason.lower()
+
 

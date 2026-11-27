@@ -71,7 +71,7 @@ def main() -> None:
     )
 
     feeds = MarketDataFeeds(finnhub_api_key=settings.finnhub_api_key)
-    mt5_feed = Mt5Feed(symbol="XAUUSDm")
+    mt5_feed = Mt5Feed(symbol=settings.mt5_symbol)
     ml_runner = MlSignalRunner(
         settings=settings,
         mt5_feed=mt5_feed,
