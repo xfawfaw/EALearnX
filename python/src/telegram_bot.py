@@ -1162,14 +1162,27 @@ class TelegramController:
         self.journal.record_ml_signal(pred, sig, evaluate_session().session_name)
         market = self.bridge.read_market_context()
         if sig.trade_allowed:
-            tp1_str = f" · 🥉 TP1 <code>{sig.tp1_price:.2f}</code>" if sig.tp1_price > 0 else ""
-            trl_str = f" · 🏃 Trail <code>${sig.trail_atr_usd:.2f}</code>" if sig.trail_atr_usd > 0 else ""
-            msg = (
-                f"🤖 <b>ML AUTO SIGNAL SENT ({pred.mode})</b>\n"
-                f"📊 <code>{pred.timeframe}</code> · HMM <code>{pred.regime}</code> · <b>{sig.order_intent}</b>\n"
-                f"🎯 Entry <code>{pred.entry_price:.2f}</code> · 🛑 SL <code>{sig.sl_price:.2f}</code>{tp1_str} · 🏆 TP2 <code>{sig.tp_price:.2f}</code>{trl_str}\n"
-                f"📈 Prob L=<code>{pred.prob_long:.2f}</code> / S=<code>{pred.prob_short:.2f}</code> (th <code>{pred.threshold:.2f}</code>)"
-            )
+            side_dot = "🟢 BUY" if sig.order_intent == "MARKET_BUY" else "🔴 SELL"
+            sl_d = abs(pred.entry_price - sig.sl_price) if sig.sl_price > 0 else 0.0
+            tp1_d = abs(sig.tp1_price - pred.entry_price) if sig.tp1_price > 0 else 0.0
+            tp2_d = abs(sig.tp_price - pred.entry_price) if sig.tp_price > 0 else 0.0
+            rr2 = (tp2_d / sl_d) if sl_d > 0 else 0.0
+            lines = [
+                f"{side_dot} · <b>{pred.mode}</b>  <code>{pred.timeframe}</code>",
+                "━━━━━━━━━━━━━━━━━━",
+                f"🎯 <b>Entry</b>  <code>{pred.entry_price:.2f}</code>",
+                f"🛑 <b>SL</b>     <code>{sig.sl_price:.2f}</code>  <i>(-${sl_d:.2f})</i>",
+            ]
+            if sig.tp1_price > 0:
+                lines.append(f"🥉 <b>TP1</b>    <code>{sig.tp1_price:.2f}</code>  <i>(+${tp1_d:.2f} · 50% + BE)</i>")
+            lines.append(f"🏆 <b>TP2</b>    <code>{sig.tp_price:.2f}</code>  <i>(+${tp2_d:.2f} · 1:{rr2:.1f}R)</i>")
+            if sig.trail_atr_usd > 0:
+                lines.append(f"🏃 <b>Trail</b>  <code>${sig.trail_atr_usd:.2f}</code> behind price")
+            lines.extend([
+                "━━━━━━━━━━━━━━━━━━",
+                f"📊 <code>HMM {pred.regime}</code> · L <code>{pred.prob_long:.0%}</code> / S <code>{pred.prob_short:.0%}</code> <i>(th {pred.threshold:.0%})</i>",
+            ])
+            msg = "\n".join(lines)
             chart_png = render_analysis_chart(market=market, ml_prediction=pred) if market is not None else None
             if chart_png is not None:
                 await self._broadcast_photo(context, chart_png, msg, reply_markup=self._status_keyboard())

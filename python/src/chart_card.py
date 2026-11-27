@@ -35,10 +35,17 @@ COLOR_BSL = (96, 165, 250, 170)
 COLOR_SSL = (192, 132, 252, 170)
 COLOR_EQ = (148, 163, 184, 110)
 
-COLOR_ENTRY = (56, 189, 248, 235)
-COLOR_SL = (248, 113, 113, 235)
-COLOR_TP = (74, 222, 128, 235)
+COLOR_ENTRY = (56, 189, 248, 245)
+COLOR_SL = (248, 113, 113, 245)
+COLOR_TP1 = (45, 212, 191, 245)
+COLOR_TP = (74, 222, 128, 245)
 COLOR_PRICE = (250, 204, 21, 215)
+COLOR_EMA21 = (251, 191, 36, 195)
+COLOR_EMA50 = (129, 140, 248, 175)
+
+RISK_BOX_FILL = (239, 68, 68, 42)
+TP1_BOX_FILL = (20, 184, 166, 38)
+TP2_BOX_FILL = (34, 197, 94, 28)
 
 
 def _load_font(size: int, bold: bool = False, mono: bool = False) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
@@ -139,7 +146,12 @@ def _compute_price_bounds(
             if val > 0:
                 prices.append(val)
     elif ml_prediction is not None and ml_prediction.order_intent != "NONE":
-        for val in (ml_prediction.entry_price, ml_prediction.sl_price, ml_prediction.tp_price):
+        for val in (
+            ml_prediction.entry_price,
+            ml_prediction.sl_price,
+            ml_prediction.tp1_price,
+            ml_prediction.tp_price,
+        ):
             if val > 0:
                 prices.append(val)
 
@@ -155,28 +167,67 @@ def _compute_price_bounds(
     return lo - pad, hi + pad
 
 
+def _ema_series(closes: list[float], period: int) -> list[float]:
+    if not closes:
+        return []
+    k = 2.0 / (period + 1.0)
+    out = [closes[0]]
+    for c in closes[1:]:
+        out.append(c * k + out[-1] * (1.0 - k))
+    return out
+
+
+def _draw_non_overlapping_axis_tags(
+    draw: ImageDraw.ImageDraw,
+    x: int,
+    plot_t: int,
+    plot_b: int,
+    tags: list[tuple[int, str, tuple[int, int, int, int], tuple[int, int, int, int]]],
+    font: ImageFont.ImageFont | ImageFont.FreeTypeFont,
+    min_gap: int = 23,
+) -> None:
+    """Draw right-axis price pills with vertical anti-collision so labels never overlap."""
+    if not tags:
+        return
+    ordered = sorted(tags, key=lambda item: item[0])
+    placed_ys: list[int] = []
+    for raw_y, _, _, _ in ordered:
+        y = max(plot_t + 12, min(plot_b - 12, raw_y))
+        if placed_ys and y - placed_ys[-1] < min_gap:
+            y = placed_ys[-1] + min_gap
+        placed_ys.append(y)
+    # Shift upward if bottom overflowed
+    if placed_ys and placed_ys[-1] > plot_b - 12:
+        overflow = placed_ys[-1] - (plot_b - 12)
+        placed_ys = [max(plot_t + 12, y - overflow) for y in placed_ys]
+    for y, (_, label, bg, fg) in zip(placed_ys, ordered):
+        _draw_axis_tag(draw, x, y, label, bg, fg, font)
+
+
 def render_analysis_chart(
     market: MarketContext,
     report: AnalysisReport | None = None,
     smc: SmcSnapshot | None = None,
     ml_prediction: MlPrediction | None = None,
 ) -> bytes | None:
-    """Render an H1 candlestick + SMC/ML Setup PNG chart card. Returns None if bars are missing."""
-    bars = market.h1_bars[-60:]
+    """Render a TradingView-style dark-mode candlestick + SMC/ML Setup PNG chart card."""
+    use_m15 = ml_prediction is not None and len(market.m15_bars) >= 10
+    chart_tf = "M15" if use_m15 else "H1"
+    bars = market.m15_bars[-55:] if use_m15 else market.h1_bars[-60:]
     if len(bars) < 5:
         return None
 
     smc_data = smc or (report.smc_snapshot if report is not None else None)
 
-    width, height = 1040, 620
+    width, height = 1080, 640
     img = Image.new("RGBA", (width, height), BG_CANVAS)
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     ov_draw = ImageDraw.Draw(overlay)
 
     f_title = _load_font(22, bold=True)
-    f_sub = _load_font(15, bold=False)
-    f_pill = _load_font(14, bold=True)
+    f_sub = _load_font(14, bold=False)
+    f_pill = _load_font(13, bold=True)
     f_mono = _load_font(13, bold=False, mono=True)
     f_mono_bold = _load_font(13, bold=True, mono=True)
 
@@ -185,11 +236,16 @@ def render_analysis_chart(
     draw.line([(0, 66), (width, 66)], fill=BORDER_SUBTLE, width=1)
 
     last_price = market.bid if market.bid > 0 else bars[-1].c
-    draw.text((24, 14), f"{market.symbol}  •  H1", font=f_title, fill=TEXT_PRIMARY)
-    draw.text((24, 42), f"Live/Last ${last_price:.2f}  •  Spread ${market.spread_usd:.2f}  •  ATR14 ${market.atr_h1_14:.2f}", font=f_sub, fill=TEXT_MUTED)
+    draw.text((24, 13), f"{market.symbol}  •  {chart_tf}", font=f_title, fill=TEXT_PRIMARY)
+    draw.text(
+        (24, 42),
+        f"Price ${last_price:.2f}  •  Spread ${market.spread_usd:.2f}  •  EMA 21 / 50",
+        font=f_sub,
+        fill=TEXT_MUTED,
+    )
 
     # Right header status pills
-    pill_x = 505
+    pill_x = 530
     if report is not None:
         bias = report.decision.bias
         bias_bg = (22, 101, 52, 255) if bias == "BULLISH" else (153, 27, 27, 255) if bias == "BEARISH" else (51, 65, 85, 255)
@@ -202,22 +258,28 @@ def render_analysis_chart(
         bias_bg = (
             (22, 101, 52, 255)
             if ml_prediction.order_intent == "MARKET_BUY"
-            else (153, 27, 27, 255)
+            else (185, 28, 28, 255)
             if ml_prediction.order_intent == "MARKET_SELL"
             else (51, 65, 85, 255)
         )
-        pill_x = _draw_pill(draw, pill_x, 19, f"{ml_prediction.timeframe} ML", (30, 58, 138, 255), TEXT_PRIMARY, f_pill)
+        intent_lbl = (
+            "BUY" if ml_prediction.order_intent == "MARKET_BUY"
+            else "SELL" if ml_prediction.order_intent == "MARKET_SELL"
+            else "WAIT"
+        )
+        pill_x = _draw_pill(draw, pill_x, 19, f"{ml_prediction.timeframe} B2", (30, 58, 138, 255), TEXT_PRIMARY, f_pill)
         pill_x = _draw_pill(draw, pill_x, 19, f"HMM {ml_prediction.regime}", (39, 39, 58, 255), TEXT_PRIMARY, f_pill)
-        _draw_pill(draw, pill_x, 19, f"{ml_prediction.order_intent}", bias_bg, TEXT_PRIMARY, f_pill)
+        pill_x = _draw_pill(draw, pill_x, 19, intent_lbl, bias_bg, TEXT_PRIMARY, f_pill)
+        _draw_pill(draw, pill_x, 19, f"L {ml_prediction.prob_long:.0%} / S {ml_prediction.prob_short:.0%}", (30, 41, 59, 255), (125, 211, 252, 255), f_pill)
     elif smc_data is not None:
         bias = smc_data.htf_aligned_bias
         bias_bg = (22, 101, 52, 255) if bias == "BULLISH" else (153, 27, 27, 255) if bias == "BEARISH" else (51, 65, 85, 255)
         pill_x = _draw_pill(draw, pill_x, 19, f"HTF {bias}", bias_bg, TEXT_PRIMARY, f_pill)
         _draw_pill(draw, pill_x, 19, f"H1 {smc_data.h1.trend}", (30, 41, 59, 255), TEXT_PRIMARY, f_pill)
 
-    # Plot geometry
+    # Plot geometry (extra right margin for crisp non-overlapping price pills)
     plot_l, plot_t = 24, 82
-    plot_r, plot_b = width - 118, height - 88
+    plot_r, plot_b = width - 134, height - 76
     plot_w = plot_r - plot_l
     plot_h = plot_b - plot_t
 
@@ -241,6 +303,47 @@ def render_analysis_chart(
             draw.line([(plot_l + 1, gy), (plot_r - 1, gy)], fill=GRID_COLOR, width=1)
         draw.text((plot_r + 10, gy - 8), f"{price_val:.2f}", font=f_mono, fill=TEXT_MUTED)
 
+    # Trade Setup values
+    setup_entry, setup_sl, setup_tp1, setup_tp, setup_label = 0.0, 0.0, 0.0, 0.0, ""
+    if report is not None and report.decision.order_intent != "NONE":
+        d = report.decision
+        setup_entry = d.limit_price if d.limit_price > 0 else last_price
+        setup_sl = d.sl_price
+        setup_tp = d.tp_price
+        setup_label = d.order_intent
+    elif ml_prediction is not None and ml_prediction.order_intent != "NONE":
+        setup_entry = ml_prediction.entry_price if ml_prediction.entry_price > 0 else last_price
+        setup_sl = ml_prediction.sl_price
+        setup_tp1 = ml_prediction.tp1_price
+        setup_tp = ml_prediction.tp_price
+        setup_label = ml_prediction.order_intent
+
+    # Candlesticks geometry (leave 6-bar right projection space for R:R position box)
+    n = len(bars)
+    proj_slots = 6 if setup_entry > 0 else 1
+    inner_l = plot_l + 14
+    inner_r = plot_r - 10
+    step = (inner_r - inner_l) / max(n + proj_slots, 1)
+    candle_w = max(3, int(step * 0.64))
+    last_cx = int(round(inner_l + (n - 0.5) * step))
+
+    # TradingView-style Shaded Risk / Reward Position Box on right side of latest bar
+    if setup_entry > 0 and setup_sl > 0:
+        box_l = max(plot_l + 4, last_cx - int(step * 2))
+        box_r = plot_r - 2
+        ye = y_of(setup_entry)
+        ys = y_of(setup_sl)
+        ov_draw.rectangle([(box_l, min(ye, ys)), (box_r, max(ye, ys))], fill=RISK_BOX_FILL)
+        if setup_tp1 > 0:
+            yt1 = y_of(setup_tp1)
+            ov_draw.rectangle([(box_l, min(ye, yt1)), (box_r, max(ye, yt1))], fill=TP1_BOX_FILL)
+            if setup_tp > 0:
+                yt2 = y_of(setup_tp)
+                ov_draw.rectangle([(box_l, min(yt1, yt2)), (box_r, max(yt1, yt2))], fill=TP2_BOX_FILL)
+        elif setup_tp > 0:
+            yt2 = y_of(setup_tp)
+            ov_draw.rectangle([(box_l, min(ye, yt2)), (box_r, max(ye, yt2))], fill=TP1_BOX_FILL)
+
     # Shaded SMC Order Blocks and FVGs
     if smc_data is not None:
         for fvg in smc_data.bullish_fvgs[:2]:
@@ -263,14 +366,12 @@ def render_analysis_chart(
             ov_draw.rectangle([(plot_l + 2, y1), (plot_r - 2, y2)], fill=BEAR_OB_FILL, outline=BEAR_OB_EDGE, width=1)
             ov_draw.text((plot_l + 10, max(plot_t + 4, y1 + 2)), f"Bear OB ({ob.low:.1f}-{ob.high:.1f})", font=f_mono_bold, fill=(252, 165, 165, 240))
 
-        # Equilibrium line (H1 50%)
         eq_price = (smc_data.h1.swing_high + smc_data.h1.swing_low) / 2.0
         if p_lo <= eq_price <= p_hi:
             ey = y_of(eq_price)
             _draw_dashed_hline(ov_draw, plot_l + 2, plot_r - 2, ey, COLOR_EQ, dash=4, gap=6, width=1)
             ov_draw.text((plot_r - 125, max(plot_t + 4, ey - 16)), f"EQ 50% {eq_price:.1f}", font=f_mono, fill=(148, 163, 184, 200))
 
-        # Liquidity levels BSL / SSL
         for lvl in smc_data.bsl_levels[:2]:
             if p_lo <= lvl <= p_hi:
                 ly = y_of(lvl)
@@ -286,13 +387,18 @@ def render_analysis_chart(
     img = Image.alpha_composite(img, overlay)
     draw = ImageDraw.Draw(img)
 
-    # Candlesticks
-    n = len(bars)
-    inner_l = plot_l + 14
-    inner_r = plot_r - 14
-    step = (inner_r - inner_l) / max(n, 1)
-    candle_w = max(3, int(step * 0.62))
+    # EMA 21 & EMA 50 trend lines
+    closes = [b.c for b in bars]
+    ema21 = _ema_series(closes, 21)
+    ema50 = _ema_series(closes, 50)
+    pts21 = [(int(round(inner_l + (i + 0.5) * step)), y_of(v)) for i, v in enumerate(ema21)]
+    pts50 = [(int(round(inner_l + (i + 0.5) * step)), y_of(v)) for i, v in enumerate(ema50)]
+    if len(pts50) >= 2:
+        draw.line(pts50, fill=COLOR_EMA50, width=2)
+    if len(pts21) >= 2:
+        draw.line(pts21, fill=COLOR_EMA21, width=2)
 
+    # Candlesticks
     for i, bar in enumerate(bars):
         cx = int(round(inner_l + (i + 0.5) * step))
         color = CANDLE_BULL if bar.c >= bar.o else CANDLE_BEAR
@@ -308,50 +414,60 @@ def render_analysis_chart(
         half = candle_w // 2
         draw.rectangle([(cx - half, top_b), (cx + half, bot_b)], fill=color)
 
-    # Current price line + tag
-    py = y_of(last_price)
-    _draw_dashed_hline(draw, plot_l + 2, plot_r - 2, py, COLOR_PRICE, dash=6, gap=4, width=1)
-    _draw_axis_tag(draw, plot_r, py, f"{last_price:.2f}", (202, 138, 4, 255), (15, 23, 42, 255), f_mono_bold)
-
-    # Trade Setup lines (active report decision or live ML prediction)
-    setup_entry, setup_sl, setup_tp, setup_label = 0.0, 0.0, 0.0, ""
-    if report is not None and report.decision.order_intent != "NONE":
-        d = report.decision
-        setup_entry = d.limit_price if d.limit_price > 0 else last_price
-        setup_sl = d.sl_price
-        setup_tp = d.tp_price
-        setup_label = d.order_intent
-    elif ml_prediction is not None and ml_prediction.order_intent != "NONE":
-        setup_entry = ml_prediction.entry_price if ml_prediction.entry_price > 0 else last_price
-        setup_sl = ml_prediction.sl_price
-        setup_tp = ml_prediction.tp_price
-        setup_label = ml_prediction.order_intent
-
-    # Optional ML Regime + Probabilities HUD inside top-right plot corner
-    if ml_prediction is not None:
-        ml_badge = f"{ml_prediction.timeframe} | HMM {ml_prediction.regime} | L {ml_prediction.prob_long:.0%} / S {ml_prediction.prob_short:.0%}"
-        _draw_pill(draw, plot_l + 12, plot_t + 10, ml_badge, (15, 23, 42, 230), (125, 211, 252, 255), f_mono_bold, pad_x=10, pad_y=4)
+    # Setup lines & anti-collision right-axis tags
+    axis_tags: list[tuple[int, str, tuple[int, int, int, int], tuple[int, int, int, int]]] = []
+    if setup_entry <= 0:
+        py = y_of(last_price)
+        _draw_dashed_hline(draw, plot_l + 2, plot_r - 2, py, COLOR_PRICE, dash=6, gap=4, width=1)
+        axis_tags.append((py, f"{last_price:.2f}", (202, 138, 4, 255), (15, 23, 42, 255)))
 
     if setup_tp > 0:
         ty = y_of(setup_tp)
         _draw_dashed_hline(draw, plot_l + 2, plot_r - 2, ty, COLOR_TP, dash=10, gap=4, width=2)
-        _draw_axis_tag(draw, plot_r, ty, f"TP {setup_tp:.1f}", (21, 128, 61, 255), TEXT_PRIMARY, f_mono_bold)
+        tp_prefix = "TP2" if setup_tp1 > 0 else "TP"
+        axis_tags.append((ty, f"{tp_prefix} {setup_tp:.1f}", (21, 128, 61, 255), TEXT_PRIMARY))
+
+    if setup_tp1 > 0:
+        t1y = y_of(setup_tp1)
+        _draw_dashed_hline(draw, plot_l + 2, plot_r - 2, t1y, COLOR_TP1, dash=6, gap=4, width=2)
+        axis_tags.append((t1y, f"TP1 {setup_tp1:.1f}", (13, 148, 136, 255), TEXT_PRIMARY))
 
     if setup_entry > 0:
         ey = y_of(setup_entry)
         _draw_dashed_hline(draw, plot_l + 2, plot_r - 2, ey, COLOR_ENTRY, dash=10, gap=4, width=2)
-        _draw_axis_tag(draw, plot_r, ey, f"IN {setup_entry:.1f}", (2, 132, 199, 255), TEXT_PRIMARY, f_mono_bold)
+        axis_tags.append((ey, f"IN  {setup_entry:.1f}", (2, 132, 199, 255), TEXT_PRIMARY))
 
     if setup_sl > 0:
         sy = y_of(setup_sl)
         _draw_dashed_hline(draw, plot_l + 2, plot_r - 2, sy, COLOR_SL, dash=10, gap=4, width=2)
-        _draw_axis_tag(draw, plot_r, sy, f"SL {setup_sl:.1f}", (185, 28, 28, 255), TEXT_PRIMARY, f_mono_bold)
+        axis_tags.append((sy, f"SL  {setup_sl:.1f}", (185, 28, 28, 255), TEXT_PRIMARY))
+
+    _draw_non_overlapping_axis_tags(draw, plot_r, plot_t, plot_b, axis_tags, f_mono_bold)
 
     # Footer card
     footer_y = plot_b + 14
     draw.line([(0, footer_y - 4), (width, footer_y - 4)], fill=BORDER_SUBTLE, width=1)
 
-    if smc_data is not None:
+    if ml_prediction is not None and report is None:
+        if setup_entry > 0 and setup_sl > 0:
+            sl_d = abs(setup_entry - setup_sl)
+            tp1_d = abs(setup_tp1 - setup_entry) if setup_tp1 > 0 else 0.0
+            tp2_d = abs(setup_tp - setup_entry) if setup_tp > 0 else 0.0
+            rr2 = (tp2_d / sl_d) if sl_d > 0 else 0.0
+            foot_1 = (
+                f"Risk -${sl_d:.2f}   •   TP1 +${tp1_d:.2f} (50% + BE)   •   "
+                f"TP2 +${tp2_d:.2f} (1:{rr2:.1f}R)   •   Trail ${ml_prediction.trail_atr_usd:.2f}"
+            )
+        else:
+            foot_1 = f"No Setup  •  {ml_prediction.mode} ({ml_prediction.regime})  •  Threshold {ml_prediction.threshold:.0%}"
+        draw.text((24, footer_y + 8), foot_1, font=f_sub, fill=TEXT_PRIMARY)
+        draw.text(
+            (24, footer_y + 32),
+            f"EA-LearningX B2  •  Prob Long {ml_prediction.prob_long:.1%} / Short {ml_prediction.prob_short:.1%}  (th {ml_prediction.threshold:.0%})",
+            font=f_mono,
+            fill=TEXT_MUTED,
+        )
+    elif smc_data is not None:
         pd = smc_data.h1.premium_discount_ratio
         zone_txt = "DISCOUNT" if pd < 0.45 else "PREMIUM" if pd > 0.55 else "EQUILIBRIUM"
         struct_txt = (
@@ -362,8 +478,7 @@ def render_analysis_chart(
         )
         draw.text((24, footer_y + 4), struct_txt, font=f_sub, fill=TEXT_PRIMARY)
 
-        # Mini P/D slider bar on bottom right
-        bar_x, bar_y, bar_w = 780, footer_y + 11, 220
+        bar_x, bar_y, bar_w = 820, footer_y + 11, 220
         draw.rounded_rectangle([(bar_x, bar_y), (bar_x + bar_w, bar_y + 8)], radius=4, fill=(30, 41, 59, 255))
         mid_x = bar_x + bar_w // 2
         draw.line([(mid_x, bar_y - 2), (mid_x, bar_y + 10)], fill=TEXT_MUTED, width=1)
@@ -378,7 +493,7 @@ def render_analysis_chart(
             else f"Status: NO TRADE  —  {report.validation_note[:75]}"
         )
         draw.text((24, footer_y + 32), intent_txt, font=f_mono, fill=TEXT_MUTED)
-    elif smc_data is not None:
+    elif smc_data is not None and ml_prediction is None:
         parts = []
         if smc_data.anchored_buy_limit:
             b = smc_data.anchored_buy_limit
